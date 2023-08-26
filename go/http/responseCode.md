@@ -3,7 +3,7 @@
 > 当前golang版本1.21
 
 ## 1.问题描述
-调用http.ResponseWriter.WriteHeader()设置httpCode,由于调用时机的不同，会倒是 意料之外的错误
+调用http.ResponseWriter.WriteHeader()设置httpCode,由于调用时机的不同，会导致意料之外的错误
 
 ## 2.代码示例
 
