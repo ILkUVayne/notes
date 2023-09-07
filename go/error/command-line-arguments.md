@@ -1,5 +1,7 @@
 # 报错 “# command-line-arguments” 问题
 
+> go version: 1.21
+
 ## 报错信息
 main包中有两个或者两个以上的.go文件,点击运行main.go时，就会报如下错误.
 ~~~
