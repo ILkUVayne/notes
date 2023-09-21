@@ -133,11 +133,21 @@ func (w *response) Header() Header {
 
 ## 4 结论
 ### 4.1 报错问题
-从源码中可以看出，write和WriteHeader方法都会这是w.wroteHeader = true（write方法调用WriteHeader设置），如果调用write后再调用WriteHeader就会抛出错误了，需要注意的是例如fmt.Fprintf()、xml.NewEncoder(w).Encode()等方法，也会调用write方法，故要设置httpCode也需要再这些方法之前调用
+从源码中可以看出，write和WriteHeader方法都会设置w.wroteHeader = true（write方法调用WriteHeader设置），如果调用write后再调用WriteHeader就会抛出错误了，需要注意的是例如fmt.Fprintf()、xml.NewEncoder(w).Encode()等方法，也会调用write方法，故要设置httpCode也需要再这些方法之前调用
 
 ### 4.2 设置header头失效问题
 从WriteHeader方法中可以看出，header实际的响应头存放在w.cw.header，而非w.handlerHeader
 #### 4.2.1 先设置header，再设置httpCode
 这种情况下，(w.cw.header == nil && w.wroteHeader && !w.cw.wroteHeader)恒等于false，故实际设置的是w.handlerHeader中的值，然会再调用WriteHeader方法时，赋值给w.cw.header，所以能够正常使用
 #### 4.2.2 先设置httpCode，再设置header
-这种情况下，(w.cw.header == nil && w.wroteHeader && !w.cw.wroteHeader)的值有两种情况，(w.cw.header == nil)既实际响应header未设置时，进行赋值操作，若不等于nil，则直接返回w.handlerHeader，之后的操作并不会影响到w.cw.header，所以调用WriteHeader方法后的设置操作没有生效
+这种情况下，(w.cw.header == nil && w.wroteHeader && !w.cw.wroteHeader)的值有两种情况
+
+##### 第一种情况
+(w.cw.header == nil)既实际响应header未设置时，进行赋值操作，初始化w.cw.header (w.cw.header = w.handlerHeader.Clone())
+
+##### 第二种情况
+若不等于nil，则直接返回w.handlerHeader，之后的操作并不会影响到w.cw.header，所以调用WriteHeader方法后的设置操作没有生效
+
+##### 结论
+
+两种情况的后续set操作均不能影响到w.cw.header，所以失效了
