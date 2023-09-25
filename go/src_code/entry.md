@@ -125,7 +125,7 @@ CALL	runtime·osinit(SB)
 # 运⾏时环境初始化构造
 CALL	runtime·schedinit(SB)
 
-# 创建mian goroutine协程，执行runtime中的mian(runtime.main中进行一系列初始化操作后，最终在执行main.main即我们编写的entry.go)
+# 创建mian goroutine协程，执行runtime中的mian(runtime.main中进行一系列初始化操作后，最终再执行main.main即我们编写的entry.go)
 MOVQ	$runtime·mainPC(SB), AX		// entry
 PUSHQ	AX
 # 创建协程函数，即golang中的 go关键字， 实现代码在runtime.proc中
