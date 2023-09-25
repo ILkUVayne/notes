@@ -27,12 +27,12 @@ $ go build -gcflags "-N -l" -o entry entry.go
 
 ~~~bash
 $ gdb entry 
-// ...
+...
 (gdb) info file
 Local exec file:
         
         Entry point: 0x455e40
-// ...        
+...        
         
 # Entry point: 0x455e40 即为入口点
 # 设置断点
@@ -66,12 +66,12 @@ Breakpoint 2 at 0x454200: file /usr/local/go_src/21/go/src/runtime/asm_amd64.s, 
 asm_amd64.s 16行代码
 
 ~~~cgo
-// ...
+    ...
 TEXT _rt0_amd64(SB),NOSPLIT,$-8
 	MOVQ	0(SP), DI	// argc
 	LEAQ	8(SP), SI	// argv
 	JMP	runtime·rt0_go(SB)
-// ...
+    ...
 ~~~
 
 该方法设置了arg后，跳转到了runtime·rt0_go(SB)方法，设置断点
@@ -87,7 +87,7 @@ runtime.rt0_go方法
 
 ~~~cgo
 TEXT runtime·rt0_go(SB),NOSPLIT|NOFRAME|TOPFRAME,$0
-// ...
+    ...
 
     CALL	runtime·args(SB)
     CALL	runtime·osinit(SB)
@@ -104,7 +104,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|NOFRAME|TOPFRAME,$0
     CALL	runtime·abort(SB)	// mstart should never return
     RET
 	
-// ...
+    ...
 
 // mainPC is a function value for runtime.main, to be passed to newproc.
 // The reference to runtime.main is made via ABIInternal, since the
@@ -120,19 +120,19 @@ GLOBL	runtime·mainPC(SB),RODATA,$8
 ~~~
 # 整理命令行参数
 CALL	runtime·args(SB)
-#  CPU Core 数量
+# CPU Core 数量
 CALL	runtime·osinit(SB)
 # 运⾏时环境初始化构造
 CALL	runtime·schedinit(SB)
 
-# 创建一个协程，执行runtime中的mian(runtime.main中进行一系列初始化操作后，最终在执行main.main即我们编写的entry.go)
+# 创建mian goroutine协程，执行runtime中的mian(runtime.main中进行一系列初始化操作后，最终在执行main.main即我们编写的entry.go)
 MOVQ	$runtime·mainPC(SB), AX		// entry
 PUSHQ	AX
 # 创建协程函数，即golang中的 go关键字， 实现代码在runtime.proc中
 CALL	runtime·newproc(SB)
 POPQ	AX
 
-// 开启主线程
+// 让当前线程执行mian goroutine
 CALL	runtime·mstart(SB)
 
 CALL	runtime·abort(SB)	// mstart should never return
