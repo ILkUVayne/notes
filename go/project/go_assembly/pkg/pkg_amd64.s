@@ -42,7 +42,34 @@ DATA ·Name2+8(SB)/8,$4
 DATA ·Name2+16(SB)/8,$"lyer"
 GLOBL ·Name2(SB),NOPTR,$24
 
-// Hello func
+// Name = Hello world!
+DATA ·text<>+0(SB)/8,$"Hello wo"
+DATA ·text<>+8(SB)/8,$"rld!"
+GLOBL ·text<>(SB),NOPTR,$16
+// Data
+DATA ·HelloWorld+0(SB)/8,$·text<>(SB)
+// Len
+DATA ·HelloWorld+8(SB)/8,$12
+GLOBL ·HelloWorld(SB),NOPTR,$16
+
+// slice HelloWorld1 []string
+
+// type reflect.SliceHeader struct {
+//      Data uintptr
+//      Len int
+//      Cap int
+// }
+
+// Data
+DATA ·HelloWorld1+0(SB)/8,$·text<>(SB)
+// Len
+DATA ·HelloWorld1+8(SB)/8,$12
+// Cap
+DATA ·HelloWorld1+16(SB)/8,$16
+GLOBL ·HelloWorld1(SB),NOPTR,$24
+
+
+// func Hello()
 TEXT ·Hello(SB),$16-0
 MOVQ ·helloWorld+0(SB), AX
 MOVQ AX, 0(SP)
@@ -50,4 +77,12 @@ MOVQ ·helloWorld+8(SB), BX
 MOVQ BX, 8(SP)
 CALL runtime·printstring(SB)
 CALL runtime·printnl(SB)
+RET
+
+// func Swap(a,b int) (int, int)
+TEXT ·Swap(SB),$0-32
+MOVQ a+0(FP), AX
+MOVQ b+8(FP), BX
+MOVQ BX, ret0+16(FP)
+MOVQ AX, ret1+24(FP)
 RET
