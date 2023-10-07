@@ -324,7 +324,7 @@ func procresize(nprocs int32) *p {
     gp := getg()
     // 初始时m都还未绑定p,不会进入到这个分支中，程序启动之后，在设置GOMAXPROCS有可能进入下面的分支
     // func GOMAXPROCS(n int) int {} debug.go:16
-	// 调用GOMAXPROCS方法修改p数量时，会调用startTheWorldGC()，该方法会调用procresize
+    // 调用GOMAXPROCS方法修改p数量时，会调用startTheWorldGC()，该方法会调用procresize
 	
     // 初始化的时候会进入else分支
     if gp.m.p != 0 && gp.m.p.ptr().id < nprocs {
