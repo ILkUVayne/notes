@@ -35,6 +35,7 @@ func newproc(fn *funcval) {
         runqput(pp, newg, true)
         
         // 唤醒一个m来运行g,初始时不会执行，因为mainStarted为false,即runtime包中的main函数还未执行
+        // runtime.main函数执行后mainStarted会设置为true proc.go:166
         if mainStarted {
             wakep()
         }
@@ -509,7 +510,267 @@ func (q *gQueue) pushBackAll(q2 gQueue) {
 }
 ~~~
 
-### 3 总结
+## 3 wakep函数
+
+wakep函数尝试唤醒M执⾏任务
+
+/usr/local/go_src/21/go/src/runtime/proc.go:2729
+
+~~~go
+func wakep() {
+    // Be conservative about spinning threads, only start one if none exist
+    // already.
+    if sched.nmspinning.Load() != 0 || !sched.nmspinning.CompareAndSwap(0, 1) {
+        return
+    }
+    
+    // Disable preemption until ownership of pp transfers to the next M in
+    // startm. Otherwise preemption here would leave pp stuck waiting to
+    // enter _Pgcstop.
+    //
+    // See preemption comment on acquirem in startm for more details.
+    mp := acquirem()
+    
+    var pp *p
+    lock(&sched.lock)
+    pp, _ = pidlegetSpinning(0)
+    if pp == nil {
+        if sched.nmspinning.Add(-1) < 0 {
+            throw("wakep: negative nmspinning")
+        }
+        unlock(&sched.lock)
+        releasem(mp)
+        return
+    }
+    // Since we always have a P, the race in the "No M is available"
+    // comment in startm doesn't apply during the small window between the
+    // unlock here and lock in startm. A checkdead in between will always
+    // see at least one running M (ours).
+    unlock(&sched.lock)
+    
+    startm(pp, true, false)
+    
+    releasem(mp)
+}
+~~~
+
+startm函数
+
+/usr/local/go_src/21/go/src/runtime/proc.go:2563
+
+~~~go
+func startm(pp *p, spinning, lockheld bool) {
+    mp := acquirem()
+    if !lockheld {
+        lock(&sched.lock)
+    }
+	
+    if pp == nil {
+        if spinning {
+        throw("startm: P required for spinning=true")
+        }
+        // p==nil 尝试获取空闲p
+        pp, _ = pidleget(0)
+        if pp == nil {
+            if !lockheld {
+                unlock(&sched.lock)
+            }
+            releasem(mp)
+            return
+        }
+    }
+    // 获取休眠闲置的m
+    nmp := mget()
+    // 如果没有休眠闲置的m，就新建
+    if nmp == nil {
+        id := mReserveID()
+        unlock(&sched.lock)
+        // 默认启动函数
+        var fn func()
+        if spinning {
+            // The caller incremented nmspinning, so set m.spinning in the new M.
+            fn = mspinning
+        }
+        // 创建m
+        newm(fn, pp, id)
+        
+        if lockheld {
+            lock(&sched.lock)
+        }
+        releasem(mp)
+        return
+    }
+    if !lockheld {
+        unlock(&sched.lock)
+    }
+    if nmp.spinning {
+        throw("startm: m is spinning")
+    }
+    if nmp.nextp != 0 {
+        throw("startm: m has p")
+    }
+    if spinning && !runqempty(pp) {
+        throw("startm: p has runnable gs")
+    }
+    // The caller incremented nmspinning, so set m.spinning in the new M.
+    // 设置自旋状态和暂存p
+    nmp.spinning = spinning
+    nmp.nextp.set(pp)
+    // 唤醒m
+    notewakeup(&nmp.park)
+    // Ownership transfer of pp committed by wakeup. Preemption is now
+    // safe.
+    releasem(mp)
+}
+~~~
+
+newm方法
+
+/usr/local/go_src/21/go/src/runtime/proc.go:2385
+
+~~~go
+func newm(fn func(), pp *p, id int64) {
+    acquirem()
+    // 创建m对象
+    mp := allocm(pp, fn, id)
+    // 暂存p
+    mp.nextp.set(pp)
+    mp.sigmask = initSigmask
+    if gp := getg(); gp != nil && gp.m != nil && (gp.m.lockedExt != 0 || gp.m.incgo) && GOOS != "plan9" {
+        lock(&newmHandoff.lock)
+        if newmHandoff.haveTemplateThread == 0 {
+            throw("on a locked thread with no template thread")
+        }
+        mp.schedlink = newmHandoff.newm
+        newmHandoff.newm.set(mp)
+        if newmHandoff.waiting {
+            newmHandoff.waiting = false
+            notewakeup(&newmHandoff.wake)
+        }
+        unlock(&newmHandoff.lock)
+        // The M has not started yet, but the template thread does not
+        // participate in STW, so it will always process queued Ms and
+        // it is safe to releasem.
+        releasem(getg().m)
+        return
+    }
+    newm1(mp)
+    releasem(getg().m)
+}
+~~~
+
+allocm方法
+
+/usr/local/go_src/21/go/src/runtime/proc.go:1889
+
+~~~go
+func allocm(pp *p, fn func(), id int64) *m {
+    allocmLock.rlock()
+    
+    // The caller owns pp, but we may borrow (i.e., acquirep) it. We must
+    // disable preemption to ensure it is not stolen, which would make the
+    // caller lose ownership.
+    acquirem()
+    
+    gp := getg()
+    if gp.m.p == 0 {
+        acquirep(pp) // temporarily borrow p for mallocs in this function
+    }
+    
+    // Release the free M list. We need to do this somewhere and
+    // this may free up a stack we can use.
+    // 释放等待释放的M列表
+    if sched.freem != nil {
+        lock(&sched.lock)
+        var newList *m
+        for freem := sched.freem; freem != nil; {
+            wait := freem.freeWait.Load()
+            if wait == freeMWait {
+                next := freem.freelink
+                freem.freelink = newList
+                newList = freem
+                freem = next
+                continue
+            }
+            // Free the stack if needed. For freeMRef, there is
+            // nothing to do except drop freem from the sched.freem
+            // list.
+            if wait == freeMStack {
+                // stackfree must be on the system stack, but allocm is
+                // reachable off the system stack transitively from
+                // startm.
+                systemstack(func() {
+                    stackfree(freem.g0.stack)
+                })
+            }
+            freem = freem.freelink
+        }
+        sched.freem = newList
+        unlock(&sched.lock)
+    }
+    // 创建新的M
+    mp := new(m)
+    // 设置启动函数
+    mp.mstartfn = fn
+    // M初始化
+    mcommoninit(mp, id)
+    
+    // In case of cgo or Solaris or illumos or Darwin, pthread_create will make us a stack.
+    // Windows and Plan 9 will layout sched stack on OS stack.
+    // 创建g0
+    // 从这里结合rt0_go初始化汇编代码可以发现，m0的g0是在rt0_go由汇编代码初始化
+    // 而main函数启动后，其他m的g0是由newm函数调用allocm函数创建的
+    if iscgo || mStackIsSystemAllocated() {
+        mp.g0 = malg(-1)
+    } else {
+        mp.g0 = malg(8192 * sys.StackGuardMultiplier)
+    }
+    mp.g0.m = mp
+    
+    if pp == gp.m.p.ptr() {
+        releasep()
+    }
+    
+    releasem(gp.m)
+    allocmLock.runlock()
+    return mp
+}
+~~~
+
+newm1函数
+
+/usr/local/go_src/21/go/src/runtime/proc.go:2434
+
+~~~go
+func newm1(mp *m) {
+    // cgo处理
+    if iscgo {
+        var ts cgothreadstart
+        if _cgo_thread_start == nil {
+            throw("_cgo_thread_start missing")
+        }
+        ts.g.set(mp.g0)
+        ts.tls = (*uint64)(unsafe.Pointer(&mp.tls[0]))
+        ts.fn = unsafe.Pointer(abi.FuncPCABI0(mstart))
+        if msanenabled {
+            msanwrite(unsafe.Pointer(&ts), unsafe.Sizeof(ts))
+        }
+        if asanenabled {
+            asanwrite(unsafe.Pointer(&ts), unsafe.Sizeof(ts))
+        }
+        execLock.rlock() // Prevent process clone.
+        asmcgocall(_cgo_thread_start, unsafe.Pointer(&ts))
+        execLock.runlock()
+        return
+    }
+    execLock.rlock() // Prevent process clone.
+    // 创建系统线程
+    newosproc(mp)
+    execLock.runlock()
+}
+~~~
+
+## 4 总结
 
 newproc方法主要实现的功能：
 
@@ -519,3 +780,5 @@ newproc方法主要实现的功能：
 4. 将 g 更换为 _Grunnable 状态，分配唯一id
 5. 将创建可运行g放入p可运行队列（P.runnext、P.runq、sched.runq）中去，依据优先级从高到低尝试放入队列
 6. mainStarted == true 时(main函数已经开始执行)，则调用wakep()唤醒一个m执行g
+7. wakep会从空闲的m队列中获取一个来绑定p执行新的g
+8. 如果不存在空闲的m,则调用newm函数创建新的m并创建m.g0,绑定p执行新的g
