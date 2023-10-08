@@ -4,9 +4,9 @@
 
 ## 1. runtime.args
 
-代码: /usr/local/go_src/21/go/src/runtime/runtime1.go:66
-
 函数 args 整理命令⾏参数
+
+/usr/local/go_src/21/go/src/runtime/runtime1.go:66
 
 ~~~go
 
@@ -24,7 +24,7 @@ func args(c int32, v **byte) {
 
 ## 2. runtime.osinit
 
-代码： /usr/local/go_src/21/go/src/runtime/os_linux.go:346
+/usr/local/go_src/21/go/src/runtime/os_linux.go:346
 
 ~~~go
 
@@ -51,7 +51,9 @@ func osArchInit() {}
 
 ## 3. runtime.schedinit
 
-调度器的初始化 /usr/local/go_src/21/go/src/runtime/proc.go:694
+调度器的初始化
+
+/usr/local/go_src/21/go/src/runtime/proc.go:694
 
 ~~~go
 func schedinit() {

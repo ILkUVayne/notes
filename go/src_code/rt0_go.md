@@ -30,7 +30,9 @@ MOVQ	BX, 32(SP)
 ## 3.初始化g0
 
 g0 m0是全局变量，在执行rt0_go是已被初始化
+
 /usr/local/go_src/21/go/src/runtime/proc.go:113
+
 ~~~
 var (
 	m0           m

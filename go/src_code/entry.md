@@ -46,6 +46,7 @@ Breakpoint 1 at 0x455e40: file /usr/local/go_src/21/go/src/runtime/rt0_linux_amd
 ~~~
 
 rt0_linux_amd64.s
+
 ~~~cgo
 #include "textflag.h"
 

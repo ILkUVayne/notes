@@ -4,14 +4,14 @@
 
 ## 1. runtime.newproc方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:4477
-
 主要逻辑：
 
 1. newproc函数获取当前正在运行的g，获取调用方 PC/IP 寄存器值
 2. 用 g0 系统栈调用newproc1函数创建 Goroutine 对象
 3. 将newproc1函数创建的可执行g依据优先顺序P.runnext、P.runq、sched.runq存放到任务队列
 4. mainStarted == true 时(main函数已经开始执行)，唤醒一个m执行g
+
+/usr/local/go_src/21/go/src/runtime/proc.go:4477
 
 ~~~go
 func newproc(fn *funcval) {
@@ -53,13 +53,13 @@ func getcallerpc() uintptr
 
 ## 2. runtime.newproc1方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:4495
-
 主要逻辑：
 
 1. 从当前g.m.p(如果是初始化时，g0.m0.p)本地队列p.gFree中获取g，本地为空，从全局队列sched.gFree中获取,都没有时，调用malg新创建一个栈大小为2KB的g
 2. 对获取到的g进行一些初始化（或者重置）操作
 3. 将 g 更换为 _Grunnable 状态，分配唯一id
+
+/usr/local/go_src/21/go/src/runtime/proc.go:4495
 
 ~~~go
 func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
@@ -184,9 +184,9 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 
 ### 2.1 acquirem方法
 
-/usr/local/go_src/21/go/src/runtime/runtime1.go:572
-
 获取当前g绑定的m
+
+/usr/local/go_src/21/go/src/runtime/runtime1.go:572
 
 ~~~go
 //go:nosplit
@@ -201,12 +201,12 @@ func acquirem() *m {
 
 gfget方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:4667
-
 主要逻辑：
 
 1. 尝试从本地空闲队列中获取g，为空时，尝试从全局空闲队列中获取转移一批g到本地队列，最多转移32个
 2. 从本地空闲队列获取g，检查栈信息，并做相应设置后，返回g
+
+/usr/local/go_src/21/go/src/runtime/proc.go:4667
 
 ~~~go
 func gfget(pp *p) *g {
@@ -277,14 +277,14 @@ retry:
 
 gfput方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:4624
-
 当goroutine执行完毕，调度器相关函数会将g放回p空闲队列，实现复用
 
 主要逻辑：
 
 1. 优先放入本地空闲队列
 2. 本地空闲队列长度大于64时，转移部分到全局空闲列表，本地空闲队列长度小于32时，停止转移
+
+/usr/local/go_src/21/go/src/runtime/proc.go:4624
 
 ~~~go
 func gfput(pp *p, gp *g) {
@@ -333,9 +333,9 @@ func gfput(pp *p, gp *g) {
 
 ### 2.3 malg方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:4458
-
 创建新的g对象，并分配stacksize大小的栈空间
+
+/usr/local/go_src/21/go/src/runtime/proc.go:4458
 
 ~~~go
 func malg(stacksize int32) *g {
@@ -360,13 +360,13 @@ func malg(stacksize int32) *g {
 
 runqput方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:6200
-
 主要步骤：
 
 1. 如果next==true,尝试优先将g放入p.runnext 作为下一个优先执行任务,若p.runnext不为空，则进行交换，老的值放入pp.runq队尾
 2. 如果next==false,尝试优先将g放入pp.runq本地可运行队列队尾
 3. 如果本地队列已满，将当前P中前len(p)/2加上当前g一起放到全局可运行队列sched.runq中去
+
+/usr/local/go_src/21/go/src/runtime/proc.go:6200
 
 ~~~go
 func runqput(pp *p, gp *g, next bool) {
@@ -415,9 +415,9 @@ retry:
 
 runqputslow方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:6235
-
 将g和本地可运行队列中的一批工作放到全局队列中
+
+/usr/local/go_src/21/go/src/runtime/proc.go:6235
 
 ~~~go
 func runqputslow(pp *p, gp *g, h, t uint32) bool {
@@ -471,9 +471,9 @@ func runqputslow(pp *p, gp *g, h, t uint32) bool {
 
 globrunqputbatch方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:5983
-
 将一批可运行goroutine放入全局可运行队列
+
+/usr/local/go_src/21/go/src/runtime/proc.go:5983
 
 ~~~go
 func globrunqputbatch(batch *gQueue, n int32) {
@@ -488,9 +488,9 @@ func globrunqputbatch(batch *gQueue, n int32) {
 
 pushBackAll方法
 
-/usr/local/go_src/21/go/src/runtime/proc.go:5983
-
 将q2链表中的g加入到全局队列中
+
+/usr/local/go_src/21/go/src/runtime/proc.go:5983
 
 ~~~go
 func (q *gQueue) pushBackAll(q2 gQueue) {
