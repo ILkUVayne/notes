@@ -241,7 +241,7 @@ func mReserveID() int64 {
 1. 计算当前真正p的数量nprocs，初始化保存所有p的全局变量allp,allp为一个切片，它里面保存的对象为*p类型，利用make初始化allp.
 2. 循环创建nprocs个p对象并初始化它，并把*p对象保存到全局变量allp切片中.
 3. 将m0和allp[0]互相绑定，并将allp[0]状态设置为_Prunning
-4. 将allp[1:nprocs]中的p放入到全局变量sched的pidle空闲队列中
+4. 将allp[1:nprocs]中的p放入到全局变量sched.pidle空闲队列中
 
 /usr/local/go_src/21/go/src/runtime/proc.go:5183
 
