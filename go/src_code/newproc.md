@@ -529,16 +529,19 @@ func wakep() {
     // enter _Pgcstop.
     //
     // See preemption comment on acquirem in startm for more details.
+    // 禁止抢占
     mp := acquirem()
     
     var pp *p
     lock(&sched.lock)
     pp, _ = pidlegetSpinning(0)
+    // 没有空闲的p,返回
     if pp == nil {
         if sched.nmspinning.Add(-1) < 0 {
             throw("wakep: negative nmspinning")
         }
         unlock(&sched.lock)
+        // 恢复当前g的m可以被抢占
         releasem(mp)
         return
     }
@@ -556,11 +559,18 @@ func wakep() {
 
 startm函数
 
+主要工作：
+
+1. 如果pp为空就获取缓存的pp
+2. 如果没有空闲的m, new一个m并且初始化m, 包括创建g0和gsignal, 新建系统线程，并且在上面执行mstart
+3. 如果有空闲的m, 唤醒m
+
 /usr/local/go_src/21/go/src/runtime/proc.go:2563
 
 ~~~go
 func startm(pp *p, spinning, lockheld bool) {
-    mp := acquirem()
+    // 禁止抢占
+	mp := acquirem()
     if !lockheld {
         lock(&sched.lock)
     }
@@ -571,10 +581,12 @@ func startm(pp *p, spinning, lockheld bool) {
         }
         // p==nil 尝试获取空闲p
         pp, _ = pidleget(0)
+        // 没有空闲p,返回
         if pp == nil {
             if !lockheld {
                 unlock(&sched.lock)
             }
+            // 恢复当前g的m可以被抢占
             releasem(mp)
             return
         }
@@ -597,6 +609,7 @@ func startm(pp *p, spinning, lockheld bool) {
         if lockheld {
             lock(&sched.lock)
         }
+        // 恢复当前g的m可以被抢占
         releasem(mp)
         return
     }
@@ -626,6 +639,12 @@ func startm(pp *p, spinning, lockheld bool) {
 
 newm方法
 
+主要工作：
+
+1. new一个m并且初始化m, 包括创建g0和gsignal
+2. 初始化一些参数
+3. 新建一个系统线程并且执行mstart
+
 /usr/local/go_src/21/go/src/runtime/proc.go:2385
 
 ~~~go
@@ -654,6 +673,9 @@ func newm(fn func(), pp *p, id int64) {
         releasem(getg().m)
         return
     }
+    // 关联真正的分配os thread
+    // 分配一个系统线程，且完成 g0上的栈分配
+    // 传入 mstart 函数，让线程执行 mstart
     newm1(mp)
     releasem(getg().m)
 }
@@ -680,6 +702,8 @@ func allocm(pp *p, fn func(), id int64) *m {
     // Release the free M list. We need to do this somewhere and
     // this may free up a stack we can use.
     // 释放等待释放的M列表
+    // mexit的时候会加到freem, m.gsignal会在那时候释放，这个结构
+    // 因为m是又new创建的，可以由gc释放
     if sched.freem != nil {
         lock(&sched.lock)
         var newList *m
@@ -765,6 +789,8 @@ func newm1(mp *m) {
     }
     execLock.rlock() // Prevent process clone.
     // 创建系统线程
+    // 分配一个系统线程，且完成 g0上的栈分配
+    // 传入 mstart 函数，让线程执行 mstart
     newosproc(mp)
     execLock.runlock()
 }
