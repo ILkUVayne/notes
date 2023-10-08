@@ -36,6 +36,8 @@ func newproc(fn *funcval) {
         
         // 唤醒一个m来运行g,初始时不会执行，因为mainStarted为false,即runtime包中的main函数还未执行
         // runtime.main函数执行后mainStarted会设置为true proc.go:166
+        // mainStarted==true 就会调用wakep()，尝试唤醒（创建）一个m来执行任务
+        // wakep()并不能百分百唤醒(创建)一个m，例如当前没有空闲的p时
         if mainStarted {
             wakep()
         }
@@ -805,6 +807,7 @@ newproc方法主要实现的功能：
 3. 对获取到的g进行一些初始化（或者重置）操作
 4. 将 g 更换为 _Grunnable 状态，分配唯一id
 5. 将创建可运行g放入p可运行队列（P.runnext、P.runq、sched.runq）中去，依据优先级从高到低尝试放入队列
-6. mainStarted == true 时(main函数已经开始执行)，则调用wakep()唤醒一个m执行g
-7. wakep会从空闲的m队列中获取一个来绑定p执行新的g
-8. 如果不存在空闲的m,则调用newm函数创建新的m并创建m.g0,绑定p执行新的g
+6. mainStarted == true 时(main函数已经开始执行)，则调用wakep()尝试唤醒其他M/P执行任务，充分发挥多核优势
+7. wakep会从全局空闲p sched.pidle中获取p,如果不存在则直接返回
+8. 存在空闲p，尝试从空闲的m队列sched.midle中获取一个来绑定p执行新的g
+9. 如果不存在空闲的m,则调用newm函数创建新的m并创建m.g0,绑定p执行新的g
