@@ -798,6 +798,51 @@ func newm1(mp *m) {
 }
 ~~~
 
+newosproc函数
+
+/usr/local/go_src/21/go/src/runtime/os_linux.go:166
+
+调用clone函数，创建系统线程，分配g0，并执行 mstart函数，启动m,开始任务调度
+
+~~~go
+func newosproc(mp *m) {
+    stk := unsafe.Pointer(mp.g0.stack.hi)
+    /*
+    * note: strace gets confused if we use CLONE_PTRACE here.
+    */
+    if false {
+        print("newosproc stk=", stk, " m=", mp, " g=", mp.g0, " clone=", abi.FuncPCABI0(clone), " id=", mp.id, " ostk=", &mp, "\n")
+    }
+    
+    // Disable signals during clone, so that the new thread starts
+    // with signals disabled. It will enable them in minit.
+    var oset sigset
+    sigprocmask(_SIG_SETMASK, &sigset_all, &oset)
+    ret := retryOnEAGAIN(func() int32 {
+        // 调用clone方法，创建Linux系统线程
+        // 与C的clone系统条用不同，go重写clone
+        // 以amd64架构为例，实现代码位于：/usr/local/go_src/21/go/src/runtime/sys_linux_amd64.s：563
+        // int32 clone(int32 flags, void *stk, M *mp, G *gp, void (*fn)(void))
+        r := clone(cloneFlags, stk, unsafe.Pointer(mp), unsafe.Pointer(mp.g0), unsafe.Pointer(abi.FuncPCABI0(mstart)))
+        // clone returns positive TID, negative errno.
+        // We don't care about the TID.
+        if r >= 0 {
+            return 0
+        }
+        return -r
+    })
+    sigprocmask(_SIG_SETMASK, &oset, nil)
+    
+    if ret != 0 {
+        print("runtime: failed to create new OS thread (have ", mcount(), " already; errno=", ret, ")\n")
+        if ret == _EAGAIN {
+            println("runtime: may need to increase max user processes (ulimit -u)")
+        }
+        throw("newosproc")
+    }
+}
+~~~
+
 ## 4 总结
 
 newproc方法主要实现的功能：
