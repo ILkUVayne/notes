@@ -32,9 +32,9 @@ mstart新m的实际入口点
 
 ~~~go
 func mstart0() {
-    // 获取当前运行的g,初始时为g0
+    // 获取当前运行的g0
     gp := getg()
-    // 初始化g堆栈
+    // 初始化g0堆栈
     // 初始时，g0的stack.lo已完成初始化，它不等于0
     osStack := gp.stack.lo == 0
     if osStack {
@@ -78,6 +78,10 @@ func mstart0() {
 
 ## 3 mstart1函数
 
+为调度做一些处理工作，并调用schedule开始任务调度
+
+/usr/local/go_src/21/go/src/runtime/proc.go:1573
+
 ~~~go
 func mstart1() {
     // 初始时，_g_为m0中的g0,其他情况下_g_也是各个m的g0
@@ -93,6 +97,7 @@ func mstart1() {
     // so other calls can reuse the current frame.
     // And goexit0 does a gogo that needs to return from mstart1
     // and let mstart0 exit the thread.
+    // gp.sched保存了goroutine的调度信息
     // getcallerpc()获取mstart1执行完的返回地址
     // getcallersp()获取调用mstart1时的栈顶地址
     // 保存g0调度信息
@@ -128,3 +133,133 @@ func mstart1() {
     schedule()
 }
 ~~~
+
+asminit函数
+
+由汇编实现，amd64架构下是一个空函数
+
+/usr/local/go_src/21/go/src/runtime/asm_amd64.s:389
+
+~~~plan9_x86
+TEXT runtime·asminit(SB),NOSPLIT,$0-0
+	// No per-thread init.
+	RET
+~~~
+
+acquirep函数
+
+M 与 P 的绑定过程只是简单的将 P 链表中的 P ，保存到 M 中的 P 指针上。 绑定前，P 的状态一定是 _Pidle，绑定后 P 的状态一定为 _Prunning
+
+/usr/local/go_src/21/go/src/runtime/proc.go:5326
+
+~~~go
+func acquirep(pp *p) {
+    // Do the part that isn't allowed to have write barriers.
+    wirep(pp)
+    
+    // Have p; write barriers now allowed.
+    
+    // Perform deferred mcache flush before this P can allocate
+    // from a potentially stale mcache.
+    pp.mcache.prepareForSweep()
+    
+    if traceEnabled() {
+        traceProcStart()
+    }
+}
+
+func wirep(pp *p) {
+    gp := getg()
+    
+    if gp.m.p != 0 {
+        throw("wirep: already in go")
+    }
+    // 检查 m 是否正常，并检查要获取的 p 的状态
+    if pp.m != 0 || pp.status != _Pidle {
+        id := int64(0)
+        if pp.m != 0 {
+            id = pp.m.ptr().id
+        }
+        print("wirep: p->m=", pp.m, "(", id, ") p->status=", pp.status, "\n")
+        throw("wirep: invalid p state")
+    }
+    // 将 p 绑定到 m，p 和 m 互相引用
+    // gp.m.p = pp
+    gp.m.p.set(pp)
+    // pp.m = gp.m
+    pp.m.set(gp.m)
+    pp.status = _Prunning
+}
+~~~
+
+## 4 m的暂止和复始
+
+stopm函数
+
+当 M 需要被暂止时，可能（因为还有其他暂止 M 的方法）会执行该调用。 此调用会将 M 进行暂止，并阻塞到它被复始时。这一过程就是工作线程的暂止和复始。
+
+/usr/local/go_src/21/go/src/runtime/proc.go:2520
+
+~~~go
+func stopm() {
+    gp := getg()
+    
+    if gp.m.locks != 0 {
+        throw("stopm holding locks")
+    }
+    if gp.m.p != 0 {
+        throw("stopm holding p")
+    }
+    if gp.m.spinning {
+        throw("stopm spinning")
+    }
+    // 将 m 放回到 空闲列表中，因为我们马上就要暂止了
+    lock(&sched.lock)
+    mput(gp.m)
+    unlock(&sched.lock)
+    // 在此阻塞，直到被唤醒
+    mPark()
+    // 此时已经被复始，说明有任务要执行
+    // 立即 acquire P
+    acquirep(gp.m.nextp.ptr())
+    gp.m.nextp = 0
+}
+
+func mPark() {
+    gp := getg()
+    // 暂止当前的 M，在此阻塞，直到被唤醒，等待被其他工作线程唤醒
+    // 调用notewakeup唤醒m
+    // 如调用startm函数时，sched.midle空闲队列存在m,则取出并调用notewakeup唤醒m proc.go:2649
+    notesleep(&gp.m.park)
+    // 清除暂止的 note
+    noteclear(&gp.m.park)
+}
+
+func notesleep(n *note) {
+    gp := getg()
+    // 必须在g0上执行
+    if gp != gp.m.g0 {
+        throw("notesleep not on g0")
+    }
+    ns := int64(-1)
+    if *cgo_yield != nil {
+        // Sleep for an arbitrary-but-moderate interval to poll libc interceptors.
+        ns = 10e6
+    }
+    for atomic.Load(key32(&n.key)) == 0 {
+        gp.m.blocked = true
+        // 休眠时间不超过ns，ns<0表示永远休眠
+        // futexsleep调用c系统调用futex实现线程阻塞
+        // 超过休眠时间时间还未被唤醒（ns>0），则会会被定时任务唤醒
+        futexsleep(key32(&n.key), 0, ns)
+        if *cgo_yield != nil {
+            asmcgocall(*cgo_yield, nil)
+        }
+        gp.m.blocked = false
+    }
+}
+~~~
+
+## 4 总结
+
+mstart函数是在go程序初始化完成后（或者新m启动时）的入口函数，主要是检查（初始化）m的堆栈信息，设置信号，g0的调度信息。完成后最终调用schedule()函数，正式开始程序的任务调度
