@@ -250,7 +250,7 @@ func notesleep(n *note) {
         gp.m.blocked = true
         // 休眠时间不超过ns，ns<0表示永远休眠
         // futexsleep调用c系统调用futex实现线程阻塞
-        // 超过休眠时间时间还未被唤醒（ns>0），则会会被定时任务唤醒
+        // 超过休眠时间时间还未被唤醒（ns>0），则会被定时任务唤醒
         futexsleep(key32(&n.key), 0, ns)
         if *cgo_yield != nil {
             asmcgocall(*cgo_yield, nil)
