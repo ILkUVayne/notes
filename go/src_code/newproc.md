@@ -630,7 +630,7 @@ func startm(pp *p, spinning, lockheld bool) {
     // The caller incremented nmspinning, so set m.spinning in the new M.
     // 设置自旋状态和暂存p
     nmp.spinning = spinning
-	// 设置将要与m绑定的p,调用notewakeup后，stopm的唤醒逻辑被执行，即即调用acquirep(gp.m.nextp.ptr())绑定nmp.nextp到m上
+    // 设置将要与m绑定的p,调用notewakeup后，stopm的唤醒逻辑被执行，即即调用acquirep(gp.m.nextp.ptr())绑定nmp.nextp到m上
     nmp.nextp.set(pp)
     // 唤醒m
     notewakeup(&nmp.park)
