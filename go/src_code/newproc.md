@@ -514,7 +514,7 @@ func (q *gQueue) pushBackAll(q2 gQueue) {
 
 ## 3 wakep函数
 
-wakep函数尝试唤醒M执⾏任务
+wakep函数尝试唤醒（新建）M执⾏任务，发挥多核优势
 
 /usr/local/go_src/21/go/src/runtime/proc.go:2729
 
