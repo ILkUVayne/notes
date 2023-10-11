@@ -47,7 +47,7 @@ Breakpoint 1 at 0x455e40: file /usr/local/go_src/21/go/src/runtime/rt0_linux_amd
 
 rt0_linux_amd64.s
 
-~~~cgo
+~~~plan9_x86
 #include "textflag.h"
 
 TEXT _rt0_amd64_linux(SB),NOSPLIT,$-8
@@ -66,13 +66,12 @@ Breakpoint 2 at 0x454200: file /usr/local/go_src/21/go/src/runtime/asm_amd64.s, 
 
 asm_amd64.s 16行代码
 
-~~~cgo
-    ...
+~~~plan9_x86
 TEXT _rt0_amd64(SB),NOSPLIT,$-8
 	MOVQ	0(SP), DI	// argc
 	LEAQ	8(SP), SI	// argv
 	JMP	runtime·rt0_go(SB)
-    ...
+    //...
 ~~~
 
 该方法设置了arg后，跳转到了runtime·rt0_go(SB)方法，设置断点
@@ -86,7 +85,7 @@ Breakpoint 3 at 0x454220: file /usr/local/go_src/21/go/src/runtime/asm_amd64.s, 
 
 runtime.rt0_go方法
 
-~~~cgo
+~~~plan9_x86
 TEXT runtime·rt0_go(SB),NOSPLIT|NOFRAME|TOPFRAME,$0
     ...
 
@@ -118,18 +117,18 @@ GLOBL	runtime·mainPC(SB),RODATA,$8
 
 ### 4.初始化步骤
 
-~~~
-# 整理命令行参数
+~~~plan9_x86
+// 整理命令行参数
 CALL	runtime·args(SB)
-# CPU Core 数量
+// CPU Core 数量
 CALL	runtime·osinit(SB)
-# 运⾏时环境初始化构造
+// 运⾏时环境初始化构造
 CALL	runtime·schedinit(SB)
 
-# 创建mian goroutine协程，执行runtime中的mian(runtime.main中进行一系列初始化操作后，最终再执行main.main即我们编写的entry.go)
+// 创建mian goroutine协程，执行runtime中的mian(runtime.main中进行一系列初始化操作后，最终再执行main.main即我们编写的entry.go)
 MOVQ	$runtime·mainPC(SB), AX		// entry
 PUSHQ	AX
-# 创建协程函数，即golang中的 go关键字， 实现代码在runtime.proc中
+// 创建协程函数，即golang中的 go关键字， 实现代码在runtime.proc中
 CALL	runtime·newproc(SB)
 POPQ	AX
 

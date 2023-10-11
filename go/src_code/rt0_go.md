@@ -16,7 +16,7 @@ Breakpoint 1 set at 0x463680 for runtime.rt0_go() /usr/local/go_src/21/go/src/ru
 
 ## 2.copy argc和argv 到AX和BX寄存器
 
-~~~
+~~~plan9_x86
 MOVQ	DI, AX		// argc
 MOVQ	SI, BX		// argv
 # 向下移动SP寄存器
@@ -33,7 +33,7 @@ g0 m0是全局变量，在执行rt0_go是已被初始化
 
 /usr/local/go_src/21/go/src/runtime/proc.go:113
 
-~~~
+~~~go
 var (
 	m0           m
 	g0           g
@@ -64,25 +64,25 @@ Warning: debugging optimized function
 
 代码分析
 
-~~~
-# 将g0地址赋值给DI寄存器（前面已经分析了，g0是全局变量已被初始化分配了地址）
+~~~plan9_x86
+// 将g0地址赋值给DI寄存器（前面已经分析了，g0是全局变量已被初始化分配了地址）
 MOVQ	$runtime·g0(SB), DI
-# SP向下移动64*1024字节，并获取地址，赋值给BX寄存器
+// SP向下移动64*1024字节，并获取地址，赋值给BX寄存器
 LEAQ	(-64*1024)(SP), BX
-# BX = *SP-64*1024
-# g0.stackguard0 = BX
+// BX = *SP-64*1024
+// g0.stackguard0 = BX
 MOVQ	BX, g_stackguard0(DI)
-# g0.stackguard1 = BX
+// g0.stackguard1 = BX
 MOVQ	BX, g_stackguard1(DI)
-# g0.stack.lo = BX
+// g0.stack.lo = BX
 MOVQ	BX, (g_stack+stack_lo)(DI)
-# g0.stack.hi = SP
+// g0.stack.hi = SP
 MOVQ	SP, (g_stack+stack_hi)(DI)
 ~~~
 
 查看g0值，验证
 
-~~~
+~~~bash
 (dlv) p g0
 runtime.g {
         // 140728952698464 - 140728952632928 = 65,536 = 64*1024
@@ -99,7 +99,7 @@ runtime.g {
 
 ### 4.设置线程的本地存储
 
-~~~
+~~~plan9_x86
     LEAQ	runtime·m0+m_tls(SB), DI
     CALL	runtime·settls(SB)
     
@@ -193,7 +193,7 @@ runtime.m {
 
 ### 5.接下来进入go进程的核心处理流程
 
-~~~
+~~~plan9_x86
 // 下面语句处理操作系统传递过来的参数
 // 即方法开始时的参数操作
 // 将argc从内存搬到AX存储器中
