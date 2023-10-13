@@ -413,6 +413,7 @@ func procresize(nprocs int32) *p {
             runnablePs = pp
         }
     }
+	// 设置p的协程窃据列表
     stealOrder.reset(uint32(nprocs))
     var int32p *int32 = &gomaxprocs // make compiler check that gomaxprocs is an int32
     // gomaxprocs设置为nprocs
