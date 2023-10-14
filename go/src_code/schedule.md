@@ -1,5 +1,7 @@
 # go并发核心调度 - schedule
 
+> go 1.21
+
 ## 1 schedule函数
 
 任务调度开始入口，调用findRunnable获取一个可执行任务，并调用execute执行任务
@@ -647,6 +649,7 @@ func execute(gp *g, inheritTime bool) {
     gp.preempt = false
     gp.stackguard0 = gp.stack.lo + stackGuard
     if !inheritTime {
+        // 调度次数加1
         mp.p.ptr().schedtick++
     }
     
