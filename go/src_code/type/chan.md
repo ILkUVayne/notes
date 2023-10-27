@@ -338,7 +338,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
         return false
     }
     
-    // 3. 既找不到接收方，buf 也已经存满，阻塞在 channel 上，等待接收方接收数据
+    // 3. 既找不到阻塞的接收方，buf也已经存满，阻塞在 channel 上，等待接收方接收数据
     // 获取当前运行g
     gp := getg()
     // 从当前p的sudogcache中获取一个sudog
@@ -358,7 +358,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
     // gp和mysg绑定
     gp.waiting = mysg
     gp.param = nil
-    // 将mysg放入chan的send等待列表
+    // 将mysg放入chan的send等待列表，此时接收方就能调用dequeue时，发现这个阻塞的g
     c.sendq.enqueue(mysg)
     gp.parkingOnChan.Store(true)
     // 被动调度
@@ -378,10 +378,10 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
     if mysg.releasetime > 0 {
         blockevent(mysg.releasetime-t0, 2)
     }
-    // 取消与之前阻塞的 channel 的关联
+    // 取消mysg与之前阻塞的 channel 的关联
     mysg.c = nil
     // 将mysg放回p.sudogcache
-    // g被唤醒时mysg已被接收方从c.sendq中取出，所以只需需要将之放回p.sudogcache即可
+    // g被唤醒时mysg已被接收方从c.sendq中取出，所以只需要将之放回p.sudogcache即可
     releaseSudog(mysg)
     if closed {
         if c.closed == 0 {
