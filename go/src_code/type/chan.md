@@ -159,7 +159,7 @@ func makechan(t *chantype, size int) *hchan {
         // 队列或元素大小为零
         // 在堆上为c分配hchanSize大小的内存
         c = (*hchan)(mallocgc(hchanSize, nil, true))
-        // 获取c.buf的指针，初始化c.buf
+        // 获取c.buf起始位置的指针，初始化c.buf
         c.buf = c.raceaddr()
         // 元素不包含指针
         case elem.PtrBytes == 0:
@@ -302,8 +302,8 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
         unlock(&c.lock)
         panic(plainError("send on closed channel"))
     }
-    // 1. channel 上有阻塞的接收方，直接发送
-    // 若存在，sg = c.c.recvq.first
+    // 1. channel 上有阻塞的接收方，取出接收等待队列的sg，直接发送
+    // 若存在，sg = c.recvq.first
     if sg := c.recvq.dequeue(); sg != nil {
         send(c, sg, ep, func() { unlock(&c.lock) }, 3)
         return true
@@ -311,14 +311,18 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
     // 2. 判断 channel 中缓存是否有剩余空间
     // 有剩余空间，存入 c.buf
     if c.qcount < c.dataqsiz {
-        // 获取要存入c.buf的地址指针
+        // c.buf的大小即chan的大小 例如make(chan int,10),则size=10
+        // 获取要存入c.buf的地址指针，即c.buf+c.sendx的地址，类似于数组或则槽,理解为c.buf[c.buf+c.sendx]
         qp := chanbuf(c, c.sendx)
         if raceenabled {
             racenotify(c, c.sendx, nil)
         }
         // 将要发送的数据拷贝到 buf 中
+        // ep即为发送的数据，将ep保存到qp位置中，理解为c.buf[c.buf+c.sendx] = ep
         typedmemmove(c.elemtype, qp, ep)
+        // 更新发送索引
         c.sendx++
+        // c.buf是一个环形缓存，故c.sendx == c.dataqsiz表示这个环存满了，发送索引又到了起始位置
         // 如果 c.sendx 索引越界则设为 0
         if c.sendx == c.dataqsiz {
             c.sendx = 0
@@ -335,19 +339,26 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
     }
     
     // 3. 既找不到接收方，buf 也已经存满，阻塞在 channel 上，等待接收方接收数据
+    // 获取当前运行g
     gp := getg()
+    // 从当前p的sudogcache中获取一个sudog
     mysg := acquireSudog()
     mysg.releasetime = 0
     if t0 != 0 {
         mysg.releasetime = -1
     }
+    // mysg保存当前发送方要发送的数据
     mysg.elem = ep
     mysg.waitlink = nil
+    // mysg绑定当前g
     mysg.g = gp
     mysg.isSelect = false
+    // mysg绑定当前chan
     mysg.c = c
+    // gp和mysg绑定
     gp.waiting = mysg
     gp.param = nil
+    // 将mysg放入chan的send等待列表
     c.sendq.enqueue(mysg)
     gp.parkingOnChan.Store(true)
     // 被动调度
@@ -369,7 +380,8 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
     }
     // 取消与之前阻塞的 channel 的关联
     mysg.c = nil
-    // 从 sudog 中移除
+    // 将mysg放回p.sudogcache
+    // g被唤醒时mysg已被接收方从c.sendq中取出，所以只需需要将之放回p.sudogcache即可
     releaseSudog(mysg)
     if closed {
         if c.closed == 0 {
@@ -512,12 +524,13 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
             }
             unlock(&c.lock)
             if ep != nil {
+                // 清空ep
                 typedmemclr(c.elemtype, ep)
             }
             return true, false
         }
     } else {
-        // 2. channel 上有阻塞的发送方，直接接收
+        // 2. channel 上有阻塞的发送方，取出c.sendq中的sg,直接接收
         if sg := c.sendq.dequeue(); sg != nil {
             recv(c, sg, ep, func() { unlock(&c.lock) }, 3)
             return true, true
@@ -525,19 +538,24 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
     }
     // 3. channel 的 buf 不空
     if c.qcount > 0 {
-        // 直接从队列中接收
+        // 直接从接收队列中接收，即c.buf[c.buf+c.recvx]
         qp := chanbuf(c, c.recvx)
         if raceenabled {
             racenotify(c, c.recvx, nil)
         }
         if ep != nil {
+            // 取出qp,即将qp对应的值（c.buf[c.buf+c.recvx]），拷贝到ep
             typedmemmove(c.elemtype, ep, qp)
         }
+        // 清空qp的值，因为该值已经拷贝到ep
         typedmemclr(c.elemtype, qp)
+        // 更新接收方索引
         c.recvx++
+        // 索引到达临界值，重置索引
         if c.recvx == c.dataqsiz {
             c.recvx = 0
         }
+        // 更新buf中的数量
         c.qcount--
         unlock(&c.lock)
         return true, true
@@ -548,8 +566,10 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
         return false, false
     }
 
-    // 4. 没有数据可以接收，阻塞当前 Goroutine
+    // 4. 没有数据可以接收，阻塞当前 Goroutine,同发送阻塞逻辑
+    // 当前g
     gp := getg()
+    // 从p.sudogcache中获取一个sudog
     mysg := acquireSudog()
     mysg.releasetime = 0
     if t0 != 0 {
@@ -592,34 +612,44 @@ src/runtime/chan.go:615
 
 ~~~go
 func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
-    if c.dataqsiz == 0 {
+    // c.dataqsiz == 0表示size为0，即无缓冲channel
+	if c.dataqsiz == 0 {
         if raceenabled {
             racesync(c, sg)
         }
         if ep != nil {
-            // 直接从对方的栈进行拷贝
+            // 直接从对方的栈进行拷贝,即将sg.elem的值拷贝到ep中
             recvDirect(c.elemtype, sg, ep)
         }
     } else {
-        // 获取接受队列索引地址
+        // 有缓冲channel
+        // 获取接受队列索引地址，这个地址指向c.buf中的某个位置，类似于c.buf[c.buf+c.recvx]
+        // 结合前面的发送代码能发c.recvx和c.sendx是组合使用的，公用c.buf环形缓存
         qp := chanbuf(c, c.recvx)
         if raceenabled {
             racenotify(c, c.recvx, nil)
             racenotify(c, c.recvx, sg)
         }
         // 从接收队列拷贝数据到接收方
+        // 将.buf[c.buf+c.recvx]拷贝到ep
         if ep != nil {
             typedmemmove(c.elemtype, ep, qp)
         }
-        // 从发送方拷贝数据到接受队列
+        // 从发送方拷贝数据到接收队列
+        // 将当前阻塞的发送方的栈内值拷贝到接收方（c.buf[c.buf+c.recvx]）队列中
         typedmemmove(c.elemtype, qp, sg.elem)
+        // 更新c.recvx索引
         c.recvx++
+        // 如果c.recvx达到最大值，重置c.recvx
         if c.recvx == c.dataqsiz {
             c.recvx = 0
         }
+        // 同步更新发送方索引
         c.sendx = c.recvx // c.sendx = (c.sendx+1) % c.dataqsiz
     }
     // 唤醒阻塞的发送方，放回调度队列，等待重新调度
+    // sg.elem值置为空，因为该值已被拷贝到接收方队列中，即c.buf[c.buf+c.recvx]
+    // 严格来说sg.elem是被放入了c.buf缓存中
     sg.elem = nil
     gp := sg.g
     unlockf()
@@ -628,6 +658,7 @@ func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
     if sg.releasetime != 0 {
         sg.releasetime = cputicks()
     }
+    // 重新唤醒sg.g，即发送方被阻塞的g,等待新的调度
     goready(gp, skip+1)
 }
 ~~~
