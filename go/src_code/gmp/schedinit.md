@@ -92,6 +92,7 @@ func schedinit() {
     moduledataverify()
     //初始化栈空间和栈内存分配
     stackinit()
+    // 内存分配器初始化
     mallocinit()
     godebug := getGodebugEarly()
     initPageTrace(godebug) // must run after mallocinit but before anything allocates
