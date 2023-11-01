@@ -586,4 +586,4 @@ func freemcache(c *mcache) {
 2. 首先进行一些涉及内存分配器的常量的检查，然后开始调用mheap_.init()初始化堆
 3. mheap_.init初始化堆中各个组件的分配器，初始化h.central数组中的mcentral，初始化h.pages
 4. 堆初始化完成后，调用allocmcache从堆中分配一个mcache0，用于在schedinit函数之后调用procresize初始化p时与p.id==0的p绑定，mcache0被绑定后就会被销毁
-5. 然后初始化内存分配 arena（64位操作系统），最后初始化内存限制，然后内存初始化结束，然后继续schedinit函数的后续其他初始化操作
+5. 然后初始化内存分配 arena（64位操作系统），最后初始化内存限制，内存初始化结束，然后继续schedinit函数的后续其他初始化操作
