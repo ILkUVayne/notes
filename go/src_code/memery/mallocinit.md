@@ -354,7 +354,10 @@ func (f *fixalloc) alloc() unsafe.Pointer {
         // 增加使用的(分配)大小
         f.inuse += f.size
         // 如果需要对内存清零，则对取出的内存执行初始化
+        // f.zero默认都为true,除了h.spanalloc
+        // mheap.init中单独设置了h.spanalloc.zero = false
         if f.zero {
+            // memclrNoHeapPointers 用于清理不包含堆指针的内存区块,从v的地址开始的f.size个字节
             // memclrNoHeapPointers使用汇编实现
             // amd64架构：src/runtime/memclr_amd64.s:13
             memclrNoHeapPointers(v, f.size)
