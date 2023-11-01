@@ -21,6 +21,9 @@ func schedinit() {
 /src/runtime/malloc.go:375
 
 ~~~go
+// /src/runtime/mheap.go:233
+var mheap_ mheap
+
 func mallocinit() {
     // 一些涉及内存分配器的常量的检查，包括
     // heapArenaBitmapBytes, physPageSize 等等
@@ -81,10 +84,12 @@ func mallocinit() {
         throw("taggedPointerbits too small")
     }
 
-    // 初始化堆
+    // 初始化堆 mheap_
+    // mheap_ 是全局变量
     mheap_.init()
     // 初始化全局变量mcache0，用于在初始化g.m.p时，即p.init
     // 详细代码查看procresize函数实现： src/runtime/proc.go:5241
+    // mcache0只会与p.id==0的p绑定
     mcache0 = allocmcache()
     // 初始化锁
     lockInit(&gcBitsArenas.lock, lockRankGcBitsArenas)
@@ -97,6 +102,7 @@ func mallocinit() {
     lockInit(&globalAlloc.mutex, lockRankGlobalAlloc)
 
     // 创建初始的 arena 增长 hint
+    // 初始化内存分配 arena，arena 是一段连续的内存，负责数据的内存分配
     // PtrSize是指针的大小（以字节为单位）-不安全。Sizeof（uintptr（0）），但作为理想常数。它也是机器本机单词大小的大小（即，在32位系统上为4，在64位上为8）。
     // goarch.PtrSize == 8 表示64位机器，即创建初始化64位机器
     if goarch.PtrSize == 8 {
@@ -121,12 +127,15 @@ func mallocinit() {
             default:
                 p = uintptr(i)<<40 | uintptrMask&(0x00c0<<32)
             }
+            // 获取堆的arenaHints链表地址
             hintList := &mheap_.arenaHints
             if (!raceenabled && i > 0x3f) || (raceenabled && i > 0x5f) {
                 hintList = &mheap_.userArena.arenaHints
             }
+            // 通过arenaHints分配器分配一个hint
             hint := (*arenaHint)(mheap_.arenaHintAlloc.alloc())
             hint.addr = p
+            // 将hint添加到arenaHints链表
             hint.next, *hintList = *hintList, hint
         }
     // else 32位机器，目前很少会有32机器了
@@ -206,16 +215,17 @@ func (h *mheap) init() {
     //
     // 因为 mspan 不包含堆指针，因此它是安全的
     h.spanalloc.zero = false
-    
+    // 遍历h.central，初始化h.central[i].mcentral
+    // len(h.central) == 136
     for i := range h.central {
         h.central[i].mcentral.init(spanClass(i))
     }
-    
+    // 初始化h.pages
     h.pages.init(&h.lock, &memstats.gcMiscSys, false)
 }
 ~~~
 
-## 4. 分配器
+### 3.1 分配器
 
 mheap结构
 
@@ -257,7 +267,7 @@ type mheap struct {
 }
 ~~~
 
-### 4.1 fixalloc
+#### 3.1.1 fixalloc
 
 fixalloc 是一个基于自由列表的固定大小的分配器。其核心原理是将若干未分配的内存块连接起来， 将未分配的区域的第一个字为指向下一个未分配区域的指针使用。Go 的主分配堆中 malloc（span、cache、treap、finalizer、profile、arena hint 等） 均 围绕它为实体进行固定分配和回收
 
@@ -290,7 +300,7 @@ type fixalloc struct {
 }
 ~~~
 
-#### 4.1.1 init
+##### 3.1.1.1 init
 
 /src/runtime/mfixalloc.go:56
 
@@ -325,7 +335,7 @@ func (f *fixalloc) init(size uintptr, first func(arg, p unsafe.Pointer), arg uns
 }
 ~~~
 
-#### 4.1.2 分配
+##### 3.1.1.2 分配
 
 fixalloc 基于自由表策略进行实现，分为两种情况：
 
@@ -392,7 +402,7 @@ func (f *fixalloc) alloc() unsafe.Pointer {
 }
 ~~~
 
-#### 4.1.3 回收
+##### 3.1.1.3 回收
 
 /src/runtime/mfixalloc.go:106
 
@@ -408,3 +418,172 @@ func (f *fixalloc) free(p unsafe.Pointer) {
     f.list = v
 }
 ~~~
+
+## 4 分配mcache
+
+mcache会在p初始化的时候被初始化，并绑定到p上
+
+结构：
+
+/src/runtime/mcache.go:19
+
+~~~go
+type mcache struct {
+    _ sys.NotInHeap
+    
+    // 下面的成员在每次 malloc 时都会被访问
+    // 因此将它们放到一起来利用缓存的局部性原理
+    nextSample uintptr // 分配这么多字节后触发堆样本
+    scanAlloc  uintptr // 分配的可扫描堆的字节数
+    
+    // 没有指针的微小对象的分配器缓存。
+    // 请参考 malloc.go 中的 "小型分配器" 注释。
+    //
+    // tiny 指向当前 tiny 块的起始位置，或当没有 tiny 块时候为 nil
+    // tiny 是一个堆指针。由于 mcache 在非 GC 内存中，我们通过在
+    // mark termination 期间在 releaseAll 中清除它来处理它。
+    tiny       uintptr
+    tinyoffset uintptr
+    tinyAllocs uintptr 
+    
+    // 其余部分并不是在每个malloc上都可以访问的。
+    
+    alloc [numSpanClasses]*mspan // 用来分配的 spans，由 spanClass 索引
+    
+    stackcache [_NumStackOrders]stackfreelist
+    
+    flushGen atomic.Uint32
+}
+~~~
+
+### 4.1 分配
+
+allocmcache函数
+
+从 mheap 上分配一个 mcache。 由于 mheap 是全局的，因此在分配期必须对其进行加锁，而分配通过 fixAlloc 组件完成
+
+/src/runtime/mcache.go:85
+
+~~~go
+// 虚拟的MSpan，不包含任何对象。
+var emptymspan mspan
+
+func allocmcache() *mcache {
+    var c *mcache
+    // 切换到g0栈执行
+    systemstack(func() {
+        lock(&mheap_.lock)
+        // 使用mcache分配器分配一个mcache
+        c = (*mcache)(mheap_.cachealloc.alloc())
+        // 设置c.flushGen == mheap_.sweepgen
+        c.flushGen.Store(mheap_.sweepgen)
+        unlock(&mheap_.lock)
+    })
+    // len(c.alloc) == 136
+    for i := range c.alloc {
+        // 暂时指向虚拟的 mspan 中
+        c.alloc[i] = &emptymspan
+    }
+    // 返回下一个采样点，是服从泊松过程的随机数
+    c.nextSample = nextSample()
+    return c
+}
+~~~
+
+由于运行时提供了采样过程堆分析的支持， 由于我们的采样的目标是平均每个 MemProfileRate 字节对分配进行采样， 显然，在整个时间线上的分配情况应该是完全随机分布的，这是一个泊松过程。 因此最佳的采样点应该是服从指数分布 exp(MemProfileRate) 的随机数，其中 MemProfileRate 为均值。
+
+~~~go
+// MemProfileRate 是一个公共变量，可以在用户态代码进行修改
+// /src/runtime/mprof.go:595
+var MemProfileRate int = 512 * 1024
+
+// /src/runtime/malloc.go:1370
+func nextSample() uintptr {
+    if GOOS == "plan9" {
+        // Plan 9 doesn't support floating point in note handler.
+        if g := getg(); g == g.m.gsignal {
+            return nextSampleNoFP()
+        }
+    }
+    
+    return uintptr(fastexprand(MemProfileRate))
+}
+~~~
+
+### 4.2 释放
+
+releaseAll函数
+
+由于 mcache 从非 GC 内存上进行分配，因此出现的任何堆指针都必须进行特殊处理。 所以在释放前，需要调用 mcache.releaseAll 将堆指针进行处理
+
+/src/runtime/mcache.go:259
+
+~~~go
+func (c *mcache) releaseAll() {
+    // 刷新scanAlloc
+    scanAlloc := int64(c.scanAlloc)
+    c.scanAlloc = 0
+    
+    sg := mheap_.sweepgen
+    dHeapLive := int64(0)
+    for i := range c.alloc {
+        s := c.alloc[i]
+        if s != &emptymspan {
+            slotsUsed := int64(s.allocCount) - int64(s.allocCountBeforeCache)
+            s.allocCountBeforeCache = 0
+            
+            // 根据分配的内容调整smallAllocCount。
+            stats := memstats.heapStats.acquire()
+            atomic.Xadd64(&stats.smallAllocCount[spanClass(i).sizeclass()], slotsUsed)
+            memstats.heapStats.release()
+            
+            // 在不一致的内部统计中调整实际分配。
+            // 我们之前假设已分配整个跨度
+            gcController.totalAlloc.Add(slotsUsed * int64(s.elemsize))
+            
+            if s.sweepgen != sg+1 {
+                dHeapLive -= int64(uintptr(s.nelems)-uintptr(s.allocCount)) * int64(s.elemsize)
+            }
+            
+            // 将 span 归还
+            mheap_.central[i].mcentral.uncacheSpan(s)
+            c.alloc[i] = &emptymspan
+        }
+    }
+    // 清空 tinyalloc 池.
+    c.tiny = 0
+    c.tinyoffset = 0
+    
+    // 刷新 tinyAllocs.
+    stats := memstats.heapStats.acquire()
+    atomic.Xadd64(&stats.tinyAllocCount, int64(c.tinyAllocs))
+    c.tinyAllocs = 0
+    memstats.heapStats.release()
+    
+    // 更新heapLive和heapScan。
+    gcController.update(dHeapLive, scanAlloc)
+}
+
+func freemcache(c *mcache) {
+    systemstack(func() {
+        // 归还 span
+        c.releaseAll()
+        // 释放 stack
+        stackcache_clear(c)
+        lock(&mheap_.lock)
+        // 将 mcache 释放
+        mheap_.cachealloc.free(unsafe.Pointer(c))
+        unlock(&mheap_.lock)
+    })
+}
+~~~
+
+## 5 总结
+
+内存初始化步骤：
+
+1. 调度器的初始化schedinit函数中调用mallocinit()开始内存初始化
+2. 首先进行一些涉及内存分配器的常量的检查，然后开始调用mheap_.init()初始化堆
+3. mheap_.init初始化堆中各个组件的分配器，初始化h.central数组中的mcentral，初始化h.pages
+4. 堆初始化完成后，调用allocmcache从堆中分配一个mcache0，用于在schedinit函数之后调用procresize初始化p时与p.id==0的p绑定，mcache0被绑定后就会被销毁
+5. 然后初始化内存分配 arena（64位操作系统），最后初始化内存限制，然后内存初始化结束，然后继续schedinit函数的后续其他初始化操作

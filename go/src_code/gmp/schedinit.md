@@ -189,8 +189,6 @@ func mcommoninit(mp *m, id int64) {
     if lo|hi == 0 {
         hi = 1
     }
-    // Same behavior as for 1.17.
-    // TODO: Simplify this.
     if goarch.BigEndian {
         mp.fastrand = uint64(lo)<<32 | uint64(hi)
     } else {
