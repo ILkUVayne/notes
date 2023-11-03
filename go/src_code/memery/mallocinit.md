@@ -102,6 +102,7 @@ func mallocinit() {
     lockInit(&globalAlloc.mutex, lockRankGlobalAlloc)
 
     // 创建初始的 arena 增长 hint
+    // 将从操作系统中申请的内存划分为若干个arena，每个arena大小为64M
     // 初始化内存分配 arena，arena 是一段连续的内存，负责数据的内存分配
     // PtrSize是指针的大小（以字节为单位）-不安全。Sizeof（uintptr（0）），但作为理想常数。它也是机器本机单词大小的大小（即，在32位系统上为4，在64位上为8）。
     // goarch.PtrSize == 8 表示64位机器，即创建初始化64位机器
@@ -215,8 +216,11 @@ func (h *mheap) init() {
     //
     // 因为 mspan 不包含堆指针，因此它是安全的
     h.spanalloc.zero = false
+    // 初始化全局mspan链表
     // 遍历h.central，初始化h.central[i].mcentral
-    // len(h.central) == 136
+    // len(h.central) == 136 
+    // 总共存在68中size_class,其中h.central[0]用于大对象分配（>32kb），剩余67种表示从小到大不同规格的span
+    // 136是因为要区分有指针和没有指针的内存，所有每种span需要两个分别用于有指针和没有指针
     for i := range h.central {
         h.central[i].mcentral.init(spanClass(i))
     }
