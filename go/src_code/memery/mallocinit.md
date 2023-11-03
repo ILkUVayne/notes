@@ -216,7 +216,7 @@ func (h *mheap) init() {
     //
     // 因为 mspan 不包含堆指针，因此它是安全的
     h.spanalloc.zero = false
-    // 初始化全局mspan链表
+    // 初始化全局中心缓存 mspan链表
     // 遍历h.central，初始化h.central[i].mcentral
     // len(h.central) == 136 
     // 总共存在68中size_class,其中h.central[0]用于大对象分配（>32kb），剩余67种表示从小到大不同规格的span
