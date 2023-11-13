@@ -182,7 +182,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
     }
     // 表示m正在内存分配
     mp.mallocing = 1
-    
+    // 是否需要触发gc
     shouldhelpgc := false
     dataSize := userSize
     // 获取当前m.p.mcache
@@ -373,8 +373,8 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
     
     if shouldhelpgc {
         if t := (gcTrigger{kind: gcTriggerHeap}); t.test() {
-        gcStart(t)
-    }
+            gcStart(t)
+        }
     }
     
     if raceenabled && noscan && dataSize < maxTinySize {
@@ -539,6 +539,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
             throw("s.allocCount != s.nelems && freeIndex == s.nelems")
         }
         // 倘若 mcache 中 span 已经没有空位，则调用 refill 方法从 mcentral 或者 mheap 中获取新的 span
+		// shouldhelpgc置为true，表示需要触发gc
         c.refill(spc)
         shouldhelpgc = true
         // 再次从替换后的 span 中获取 object 空位的偏移量
