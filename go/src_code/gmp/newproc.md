@@ -579,7 +579,7 @@ func startm(pp *p, spinning, lockheld bool) {
 	
     if pp == nil {
         if spinning {
-        throw("startm: P required for spinning=true")
+            throw("startm: P required for spinning=true")
         }
         // p==nil 尝试获取空闲p
         pp, _ = pidleget(0)
