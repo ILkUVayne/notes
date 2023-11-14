@@ -229,81 +229,8 @@ func gcBgMarkWorker() {
             gcBgMarkWorkerPool.push(&node.node)
             return true
         }, unsafe.Pointer(node), waitReasonGCWorkerIdle, traceBlockSystemGoroutine, 0)
-		
-        node.m.set(acquirem())
-        pp := gp.m.p.ptr() // P can't change with preemption disabled.
-        
-        if gcBlackenEnabled == 0 {
-            println("worker mode", pp.gcMarkWorkerMode)
-            throw("gcBgMarkWorker: blackening not enabled")
-        }
-        
-        if pp.gcMarkWorkerMode == gcMarkWorkerNotWorker {
-            throw("gcBgMarkWorker: mode not set")
-        }
-        
-        startTime := nanotime()
-        pp.gcMarkWorkerStartTime = startTime
-        var trackLimiterEvent bool
-        if pp.gcMarkWorkerMode == gcMarkWorkerIdleMode {
-            trackLimiterEvent = pp.limiterEvent.start(limiterEventIdleMarkWork, startTime)
-        }
-        
-        decnwait := atomic.Xadd(&work.nwait, -1)
-        if decnwait == work.nproc {
-            println("runtime: work.nwait=", decnwait, "work.nproc=", work.nproc)
-            throw("work.nwait was > work.nproc")
-        }
-        
-        systemstack(func() {
-            casGToWaiting(gp, _Grunning, waitReasonGCWorkerActive)
-            switch pp.gcMarkWorkerMode {
-            default:
-                throw("gcBgMarkWorker: unexpected gcMarkWorkerMode")
-            case gcMarkWorkerDedicatedMode:
-                gcDrain(&pp.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit)
-                if gp.preempt {
-                    if drainQ, n := runqdrain(pp); n > 0 {
-                        lock(&sched.lock)
-                        globrunqputbatch(&drainQ, int32(n))
-                        unlock(&sched.lock)
-                    }
-                }
-                gcDrain(&pp.gcw, gcDrainFlushBgCredit)
-            case gcMarkWorkerFractionalMode:
-                gcDrain(&pp.gcw, gcDrainFractional|gcDrainUntilPreempt|gcDrainFlushBgCredit)
-            case gcMarkWorkerIdleMode:
-                gcDrain(&pp.gcw, gcDrainIdle|gcDrainUntilPreempt|gcDrainFlushBgCredit)
-            }
-            casgstatus(gp, _Gwaiting, _Grunning)
-        })
-        
-        // Account for time and mark us as stopped.
-        now := nanotime()
-        duration := now - startTime
-        gcController.markWorkerStop(pp.gcMarkWorkerMode, duration)
-        if trackLimiterEvent {
-            pp.limiterEvent.stop(limiterEventIdleMarkWork, now)
-        }
-        if pp.gcMarkWorkerMode == gcMarkWorkerFractionalMode {
-            atomic.Xaddint64(&pp.gcFractionalMarkTime, duration)
-        }
-		
-        incnwait := atomic.Xadd(&work.nwait, +1)
-        if incnwait > work.nproc {
-            println("runtime: p.gcMarkWorkerMode=", pp.gcMarkWorkerMode,
-            "work.nwait=", incnwait, "work.nproc=", work.nproc)
-            throw("work.nwait > work.nproc")
-        }
-		
-        pp.gcMarkWorkerMode = gcMarkWorkerNotWorker
-		
-        if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
-            releasem(node.m.ptr())
-            node.m.set(nil)
-            
-            gcMarkDone()
-        }
+        // 后面的代码是被findRunnableGCWorker唤醒后的并发标记阶段
+        // ...
     }
 }
 ~~~
@@ -545,5 +472,450 @@ func startTheWorldWithSema() int64 {
     // 恢复可抢占
     releasem(mp)
     return startTime
+}
+~~~
+
+## 2. 并发标记
+
+在并发标记之前，已经将创建了用于并发标记的协程，此时gc协程还处于阻塞状态，等待被调度
+
+### 2.1 调度标记协程
+
+schedule函数
+
+GMP调度的主干方法schedule中，会通过g0调用findRunnable方法P寻找下一个可执行的协程，找到后会调用execute方法，内部完成由g0->g的切换，真正执行用户协程中的任务
+
+/src/runtime/proc.go:3553
+
+~~~go
+func schedule() {
+    // ...
+	gp, inheritTime, tryWakeP := findRunnable()
+    // ...
+    execute(gp, inheritTime)
+}
+~~~
+
+findRunnable函数
+
+检查全局标识gcBlackenEnabled发现当前开启GC模式时，会调用 gcControllerState.findRunnableGCWorker唤醒并取得标记协程
+
+src/runtime/proc.go:2891
+
+~~~go
+func findRunnable() (gp *g, inheritTime, tryWakeP bool) {
+    // ...
+    
+    // gcBlackenEnabled在gc标记准备阶段被置为1
+    // 如果正在 GC，去找 GC 的 g
+    if gcBlackenEnabled != 0 {
+        gp, tnow := gcController.findRunnableGCWorker(pp, now)
+        if gp != nil {
+            return gp, false, true
+        }
+        now = tnow
+    }
+    
+    // ...
+}
+~~~
+
+findRunnableGCWorker函数
+
+findRunnableGCWorker函数会从全局的标记协程池 gcBgMarkWorkerPool获取到一个封装了标记协程的node. 并通过gcControllerState中 dedicatedMarkWorkersNeeded、fractionalUtilizationGoal等字段标识判定标记协程的标记模式，然后将标记协程状态由_Gwaiting唤醒为_Grunnable，并返回给 g0 用于执行
+
+src/runtime/mgcpacer.go:731
+
+~~~go
+func (c *gcControllerState) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
+    if gcBlackenEnabled == 0 {
+        throw("gcControllerState.findRunnable: blackening not enabled")
+    }
+    
+    if now == 0 {
+        now = nanotime()
+    }
+    if gcCPULimiter.needUpdate(now) {
+        gcCPULimiter.update(now)
+    }
+    // 保证当前 pp 是可以调度标记协程的，每个 p 只能执行一个标记协程
+    if !gcMarkWorkAvailable(pp) {
+        return nil, now
+    }
+
+    // 从全局标记协程池子 gcBgMarkWorkerPool 中取出 g
+    node := (*gcBgMarkWorkerNode)(gcBgMarkWorkerPool.pop())
+    if node == nil {
+        return nil, now
+    }
+    
+    decIfPositive := func(val *atomic.Int64) bool {
+    for {
+        v := val.Load()
+        if v <= 0 {
+            return false
+        }
+        
+        if val.CompareAndSwap(v, v-1) {
+            return true
+        }
+    }
+    }
+    // 确认标记的模式
+    if decIfPositive(&c.dedicatedMarkWorkersNeeded) {
+        pp.gcMarkWorkerMode = gcMarkWorkerDedicatedMode
+    } else if c.fractionalUtilizationGoal == 0 {
+        // No need for fractional workers.
+        gcBgMarkWorkerPool.push(&node.node)
+        return nil, now
+    } else {
+        delta := now - c.markStartTime
+        if delta > 0 && float64(pp.gcFractionalMarkTime)/float64(delta) > c.fractionalUtilizationGoal {
+            // Nope. No need to run a fractional worker.
+            gcBgMarkWorkerPool.push(&node.node)
+            return nil, now
+        }
+        // Run a fractional worker.
+        pp.gcMarkWorkerMode = gcMarkWorkerFractionalMode
+    }
+
+    // 将标记协程的状态置为 runnable，填了 gcBgMarkWorker 方法中 gopark 操作留下的坑
+    gp := node.gp.ptr()
+    casgstatus(gp, _Gwaiting, _Grunnable)
+    if traceEnabled() {
+        traceGoUnpark(gp, 0)
+    }
+    return gp, now
+}
+~~~
+
+### 2.2 并发标记
+
+标记协程被唤醒后，主线又重新拉回到gcBgMarkWorker方法中，此时会根据findRunnableGCWorker方法中预设的标记模式，调用gcDrain方法开始执行并发标记工作.
+
+标记模式包含以下三种：
+
+- gcMarkWorkerDedicatedMode：专一模式. 需要完整执行完标记任务，不可被抢占
+- gcMarkWorkerFractionalMode：分时模式. 当标记协程执行时长达到一定比例后，可以被抢占
+- gcMarkWorkerIdleMode: 空闲模式. 随时可以被抢占
+
+在执行专一模式时，会先以可被抢占的模式尝试执行，倘若真的被用户协程抢占，则会先将当前P本地队列的用户协程投放到全局g队列中，再将标记模式改为不可抢占模式. 这样设计的优势是，通过负载均衡的方式，减少当前P下用户协程的等待时长，提高用户体验.
+
+在gcDrain方法中，有两个核心的gcDrainFlags控制着标记协程的运行风格：
+
+- gcDrainIdle：空闲模式，随时可被抢占
+- gcDrainFractional：分时模式，执行一定比例的时长后可被抢占
+
+gcBgMarkWorker函数
+
+/src/runtime/mgc.go:1259
+
+~~~go
+// /src/runtime/mgc.go:247
+type gcMarkWorkerMode int
+
+const (
+    // 指示下一个计划的G没有开始工作，并且该模式应该被忽略。
+    gcMarkWorkerNotWorker gcMarkWorkerMode = iota
+    
+    // 专一模式. 需要完整执行完标记任务，不可被抢占
+    gcMarkWorkerDedicatedMode
+    
+    // 分时模式. 当标记协程执行时长达到一定比例后，可以被抢占
+    gcMarkWorkerFractionalMode
+    
+    // 空闲模式. 随时可以被抢占
+    gcMarkWorkerIdleMode
+)
+
+// src/runtime/mgcmark.go:1005
+type gcDrainFlags int
+
+const (
+    gcDrainUntilPreempt gcDrainFlags = 1 << iota
+    gcDrainFlushBgCredit
+    gcDrainIdle
+    gcDrainFractional
+)
+
+func gcBgMarkWorker() {
+    // 获取当前g
+    gp := getg()
+	
+    gp.m.preemptoff = "GC worker init"
+    node := new(gcBgMarkWorkerNode)
+    gp.m.preemptoff = ""
+    node.gp.set(gp)
+    node.m.set(acquirem())
+    // 唤醒外部的 for 循环
+    notewakeup(&work.bgMarkReady)
+
+    for {
+        // gopark
+        // ...
+		
+        // 被findRunnableGCWorker唤醒后的并发标记阶段
+        // ...
+        node.m.set(acquirem())
+        pp := gp.m.p.ptr() // P can't change with preemption disabled.
+        
+        if gcBlackenEnabled == 0 {
+            println("worker mode", pp.gcMarkWorkerMode)
+            throw("gcBgMarkWorker: blackening not enabled")
+        }
+        
+        if pp.gcMarkWorkerMode == gcMarkWorkerNotWorker {
+            throw("gcBgMarkWorker: mode not set")
+        }
+        
+        startTime := nanotime()
+        pp.gcMarkWorkerStartTime = startTime
+        var trackLimiterEvent bool
+        if pp.gcMarkWorkerMode == gcMarkWorkerIdleMode {
+            trackLimiterEvent = pp.limiterEvent.start(limiterEventIdleMarkWork, startTime)
+        }
+        
+        decnwait := atomic.Xadd(&work.nwait, -1)
+        if decnwait == work.nproc {
+            println("runtime: work.nwait=", decnwait, "work.nproc=", work.nproc)
+            throw("work.nwait was > work.nproc")
+        }
+        // 根据不同的运作模式，执行 gcDrain 方法：
+        systemstack(func() {
+            casGToWaiting(gp, _Grunning, waitReasonGCWorkerActive)
+            switch pp.gcMarkWorkerMode {
+            default:
+                throw("gcBgMarkWorker: unexpected gcMarkWorkerMode")
+            case gcMarkWorkerDedicatedMode:
+                // 专一模式
+                // gcDrainUntilPreempt|gcDrainFlushBgCredit => 1|2 == 3 == gcDrainIdle
+                gcDrain(&pp.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit)
+                if gp.preempt {
+                    if drainQ, n := runqdrain(pp); n > 0 {
+                        lock(&sched.lock)
+                        globrunqputbatch(&drainQ, int32(n))
+                        unlock(&sched.lock)
+                    }
+                }
+                gcDrain(&pp.gcw, gcDrainFlushBgCredit)
+            case gcMarkWorkerFractionalMode:
+                // 分时模式
+                gcDrain(&pp.gcw, gcDrainFractional|gcDrainUntilPreempt|gcDrainFlushBgCredit)
+            case gcMarkWorkerIdleMode:
+                // 空闲模式
+                gcDrain(&pp.gcw, gcDrainIdle|gcDrainUntilPreempt|gcDrainFlushBgCredit)
+            }
+            casgstatus(gp, _Gwaiting, _Grunning)
+        })
+        
+        // Account for time and mark us as stopped.
+        now := nanotime()
+        duration := now - startTime
+        gcController.markWorkerStop(pp.gcMarkWorkerMode, duration)
+        if trackLimiterEvent {
+            pp.limiterEvent.stop(limiterEventIdleMarkWork, now)
+        }
+        if pp.gcMarkWorkerMode == gcMarkWorkerFractionalMode {
+            atomic.Xaddint64(&pp.gcFractionalMarkTime, duration)
+        }
+		
+        incnwait := atomic.Xadd(&work.nwait, +1)
+        if incnwait > work.nproc {
+            println("runtime: p.gcMarkWorkerMode=", pp.gcMarkWorkerMode,
+            "work.nwait=", incnwait, "work.nproc=", work.nproc)
+            throw("work.nwait > work.nproc")
+        }
+		
+        pp.gcMarkWorkerMode = gcMarkWorkerNotWorker
+		
+        if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
+            releasem(node.m.ptr())
+            node.m.set(nil)
+            
+            gcMarkDone()
+        }
+    }
+}
+~~~
+
+### 2.3 标记流程
+
+gcDrain 方法是并发标记阶段的核心方法：
+
+- 在空闲模式（idle）和分时模式（fractional）下，会提前设好 check 函数（pollWork 和 pollFractionalWorkerExit）
+- 标记根对象
+- 循环从gcw缓存队列中取出灰色对象，执行scanObject方法进行扫描标记
+- 定期检查check 函数，判断标记流程是否应该被打断
+
+src/runtime/mgcmark.go:1036
+
+~~~go
+func gcDrain(gcw *gcWork, flags gcDrainFlags) {
+    if !writeBarrier.needed {
+        throw("gcDrain phase incorrect")
+    }
+    
+    gp := getg().m.curg
+    // 模式标记
+    preemptible := flags&gcDrainUntilPreempt != 0
+    flushBgCredit := flags&gcDrainFlushBgCredit != 0
+    idle := flags&gcDrainIdle != 0
+    
+    initScanWork := gcw.heapScanWork
+	
+    checkWork := int64(1<<63 - 1)
+    var check func() bool
+    if flags&(gcDrainIdle|gcDrainFractional) != 0 {
+        checkWork = initScanWork + drainCheckThreshold
+        if idle {
+            check = pollWork
+        } else if flags&gcDrainFractional != 0 {
+            check = pollFractionalWorkerExit
+        }
+    }
+    
+    // 倘若根对象还未标记完成，则先进行根对象标记
+    if work.markrootNext < work.markrootJobs {
+        // Stop if we're preemptible or if someone wants to STW.
+        for !(gp.preempt && (preemptible || sched.gcwaiting.Load())) {
+            job := atomic.Xadd(&work.markrootNext, +1) - 1
+            if job >= work.markrootJobs {
+                break
+            }
+            // 标记根对象
+            markroot(gcw, job, flushBgCredit)
+            if check != nil && check() {
+                goto done
+            }
+        }
+    }
+    
+    // 遍历队列，进行对象标记.
+    // Stop if we're preemptible or if someone wants to STW.
+    for !(gp.preempt && (preemptible || sched.gcwaiting.Load())) {
+        if work.full == 0 {
+            gcw.balance()
+        }
+        // 尝试从 p 本地队列中获取灰色对象，无锁
+        b := gcw.tryGetFast()
+        if b == 0 {
+            // 尝试从全局队列中获取灰色对象，加锁
+            b = gcw.tryGet()
+            if b == 0 {
+                // 刷新写屏障缓存,将p的写屏障缓存刷新的gcw
+                wbBufFlush()
+                b = gcw.tryGet()
+            }
+        }
+        if b == 0 {
+            // 已无对象需要标记
+            break
+        }
+        // 进行对象的标记，并顺延指针进行后续对象的扫描
+        scanobject(b, gcw)
+		
+        if gcw.heapScanWork >= gcCreditSlack {
+            gcController.heapScanWork.Add(gcw.heapScanWork)
+            if flushBgCredit {
+                gcFlushBgCredit(gcw.heapScanWork - initScanWork)
+                initScanWork = 0
+            }
+            checkWork -= gcw.heapScanWork
+            gcw.heapScanWork = 0
+            
+            if checkWork <= 0 {
+                checkWork += drainCheckThreshold
+                if check != nil && check() {
+                    break
+                }
+            }
+        }
+    }
+    
+done:
+    // Flush remaining scan work credit.
+    if gcw.heapScanWork > 0 {
+        gcController.heapScanWork.Add(gcw.heapScanWork)
+        if flushBgCredit {
+            gcFlushBgCredit(gcw.heapScanWork - initScanWork)
+        }
+        gcw.heapScanWork = 0
+    }
+}
+~~~
+
+wbBufFlush函数
+
+在混合写屏障机制中，核心是会将需要置灰的对象添加到当前P的wbBuf缓存中. 随后在并发标记缺灰、标记终止前置检查等时机会执行wbBufFlush1方法，批量地将wbBuf中的对象释放出来进行置灰，保证达到预期的效果
+
+wbBufFlush1方法中涉及了对象置灰操作，其包含了在对应mspan的bitmap中打点标记以及将对象添加到gcw队列两步
+
+src/runtime/mwbbuf.go:166
+
+~~~go
+func wbBufFlush() {
+    
+    if getg().m.dying > 0 {
+        getg().m.p.ptr().wbBuf.discard()
+        return
+    }
+    
+    systemstack(func() {
+        wbBufFlush1(getg().m.p.ptr())
+    })
+}
+
+func wbBufFlush1(pp *p) {
+    // 获取当前 P 通过屏障机制缓存的指针
+    start := uintptr(unsafe.Pointer(&pp.wbBuf.buf[0]))
+    n := (pp.wbBuf.next - start) / unsafe.Sizeof(pp.wbBuf.buf[0])
+    ptrs := pp.wbBuf.buf[:n]
+	
+    pp.wbBuf.next = 0
+    
+    if useCheckmark {
+        // Slow path for checkmark mode.
+        for _, ptr := range ptrs {
+            shade(ptr)
+        }
+        pp.wbBuf.reset()
+        return
+    }
+    // 将缓存的指针作标记，添加到 gcw 队列
+    gcw := &pp.gcw
+    pos := 0
+    for _, ptr := range ptrs {
+        if ptr < minLegalPointer {
+            continue
+        }
+        obj, span, objIndex := findObject(ptr, 0, 0)
+        if obj == 0 {
+            continue
+        }
+        
+        mbits := span.markBitsForIndex(objIndex)
+        if mbits.isMarked() {
+            continue
+        }
+        mbits.setMarked()
+        
+        // 标记span
+        arena, pageIdx, pageMask := pageIndexOf(span.base())
+        if arena.pageMarks[pageIdx]&pageMask == 0 {
+            atomic.Or8(&arena.pageMarks[pageIdx], pageMask)
+        }
+        
+        if span.spanclass.noscan() {
+            gcw.bytesMarked += uint64(span.elemsize)
+            continue
+        }
+        ptrs[pos] = obj
+        pos++
+    }
+
+    // 所有缓存对象入队
+    gcw.putBatch(ptrs[:pos])
+    
+    pp.wbBuf.reset()
 }
 ~~~
