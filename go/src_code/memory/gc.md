@@ -14,7 +14,7 @@
 4. 控制标记协程数量和执行时长，使得CPU占用率趋近25%
 5. 设置GC阶段为GCMark，开启混合混合写屏障
 6. 标记mcache中的tiny对象
-7. S(START)TW
+7. S(START)TW，等待标记协程被唤醒并执行
 
 
 /src/runtime/mgc.go:600
@@ -213,7 +213,7 @@ func gcBgMarkWorker() {
     gp.m.preemptoff = ""
     node.gp.set(gp)
     node.m.set(acquirem())
-    // 唤醒外部的 for 循环
+    // 唤醒外部的 for 循环，即gcBgMarkStartWorkers
     notewakeup(&work.bgMarkReady)
 
     for {
@@ -1078,6 +1078,8 @@ done:
 
 不论是全局变量扫描还是栈变量扫描，底层都会调用到scanblock方法
 
+src/runtime/mgcmark.go:163
+
 ~~~go
 func markroot(gcw *gcWork, i uint32, flushBgCredit bool) int64 {
     var workDone int64
@@ -1140,7 +1142,7 @@ func markroot(gcw *gcWork, i uint32, flushBgCredit bool) int64 {
                 throw("g already scanned")
             }
             // 栈扫描
-			// 1.扫描局部变量 2.扫描函数参数
+            // 1.扫描局部变量 2.扫描函数参数
             workDone += scanstack(gp, gcw)
             gp.gcscandone = true
             resumeG(stopped)
@@ -1336,6 +1338,8 @@ func deductAssistCredit(size uintptr) *g {
 
 辅助标记逻辑位于gcAssistAlloc方法. 在该方法中，会先尝试从公共资产池gcController.bgScanCredit中偷取资产，倘若资产仍然不够，则会通过systemstack方法切换至g0，并在 gcAssistAlloc1 方法内调用 gcDrainN 方法参与到并发标记流程当中.
 
+/src/runtime/malloc.go:406
+
 ~~~go
 func gcAssistAlloc(gp *g) {
     // 不能在g0栈执行
@@ -1378,7 +1382,7 @@ retry:
         gcController.bgScanCredit.Add(-stolen)
         
         scanWork -= stolen
-		// 全局资产够用，则无需辅助标记，直接返回
+        // 全局资产够用，则无需辅助标记，直接返回
         if scanWork == 0 {
             if traced {
                 traceGCMarkAssistDone()
@@ -1407,3 +1411,38 @@ retry:
 }
 ~~~
 
+#### 2.3.9 新分配对象直接置黑
+
+GC期间新分配的对象，会被直接置黑，呼应了混合写屏障中的设定
+
+~~~go
+// /src/runtime/malloc.go:1181
+func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+    // ...
+    if gcphase != _GCoff {
+    // GC期间新分配的对象，会被直接置黑
+        gcmarknewobject(span, uintptr(x), size)
+    }
+    // ...
+}
+
+// /src/runtime/mgcmark.go:1564
+func gcmarknewobject(span *mspan, obj, size uintptr) {
+    if useCheckmark { // The world should be stopped so this should not happen.
+        throw("gcmarknewobject called while doing checkmark")
+    }
+    
+    // Mark object.
+    objIndex := span.objIndex(obj)
+    span.markBitsForIndex(objIndex).setMarked()
+    
+    // Mark span.
+    arena, pageIdx, pageMask := pageIndexOf(span.base())
+    if arena.pageMarks[pageIdx]&pageMask == 0 {
+        atomic.Or8(&arena.pageMarks[pageIdx], pageMask)
+    }
+    
+    gcw := &getg().m.p.ptr().gcw
+    gcw.bytesMarked += uint64(size)
+}
+~~~
