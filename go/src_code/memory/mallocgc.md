@@ -168,7 +168,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
             inittrace.allocs += 1
         }
     }
-    
+    // 计算在gc阶段（gcBlackenEnabled != 0）分配的辅助标记内存大小
     assistG := deductAssistCredit(size)
     
     // 获取当前m，并且当前m不能被抢占
@@ -322,6 +322,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
     span.freeIndexForScan = span.freeindex
     
     if gcphase != _GCoff {
+        // GC期间新分配的对象，会被直接置黑
         gcmarknewobject(span, uintptr(x), size)
     }
     
