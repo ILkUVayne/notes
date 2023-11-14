@@ -60,6 +60,11 @@ func (t gcTrigger) test() bool {
 
 ## 2. 分配对象时触发
 
+触发条件（二者成立其一即可触发gc）：
+
+1. 需要初始化一个大小超过32KB的大对象
+2. 待初始化对象在mcache中对应spanClass的mspan空间已用尽
+
 /src/runtime/malloc.go:948
 
 ~~~go
@@ -239,7 +244,7 @@ func injectglist(glist *gList) {
     pp := getg().m.p.ptr()
     if pp == nil {
         lock(&sched.lock)
-		// 将g放入全局可执行队列
+        // 将g放入全局可执行队列
         globrunqputbatch(&q, int32(qsize))
         unlock(&sched.lock)
         startIdle(qsize)
