@@ -111,6 +111,7 @@ func findRunnable() (gp *g, inheritTime, tryWakeP bool) {
 top:
     // g0.m.p
     pp := mp.p.ptr()
+	// stop the world的时候会置为true
     if sched.gcwaiting.Load() {
         // 如果需要 GC，不再进行调度
         gcstopm()
