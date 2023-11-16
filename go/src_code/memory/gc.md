@@ -1845,3 +1845,41 @@ func (sl *sweepLocked) sweep(preserve bool) bool {
     // ...
 }
 ~~~
+
+## 4 总结
+
+三色标记原理：
+
+- allocBits：标识内存的闲忙状态，一个bit位对应一个object大小的内存块，值为1代表已使用；值为0代表未使用
+- gcmarkBits：只在GC期间使用. 值为1代表占用该内存块的对象被标记存活
+- 白色对象：gcmarkBits中bit为0
+- 灰色对象：gcmarkBits中bit为1，且对象存在与gcw中，等待被遍历
+- 黑色对象：gcmarkBits中bit为1，且对象已经离开gcw
+
+gc开始前，gcmarkBits为0，即白色，表示对象可能存活，还没有开始标记
+
+- 标记准备阶段
+    - 创建p数量相当的标记协程，并阻塞等待被唤醒
+    - S(STOP)TW
+    - 开启写屏障_GCmark，标记tiny内存,设置gc启动标识等等
+    - S(START)TW
+
+gc开始后，从根对象开始扫描，并置灰. 即将gcmarkBits对应位置为1，且将置灰对象放入会对象缓存队列(gcw)中
+
+扫描完根对象后，开始循环取出gcw中的对象，此时该对象变成黑色. 并检查该对象指针，存在则将之置灰. 
+
+当gcw中为空后，表示标记已完成，进入标记终止阶段
+
+- 标记终止阶段
+  - S(STOP)TW
+  - 设置GC进入标记终止阶段_GCmarktermination
+  - 切换至g0，设置GC进入标记关闭阶段_GCoff
+  - 切换至g0，调用gcSweep方法，唤醒后台清扫协程，执行标记清扫工作
+  - 切换至g0，执行gcControllerCommit方法，设置触发下一轮GC的内存阈值
+  - S(START)TW
+
+唤醒在runtime.main中创建并阻塞的清扫协程，清扫协程会遍历每个mspan并清扫(每遍历10个就会尝试主动让渡)，实际就是用gcmarkBits覆盖allocBits，并创建一个新的gcmarkBits
+
+Golang 进程从操作系统主内存（Random-Access Memory，简称 RAM）中申请到堆中进行复用的内存部分称为驻留内存（Resident Set Size，RSS）. 显然，RSS 不可能只借不还，应当遵循实际使用情况进行动态扩缩.
+
+Golang 运行时会异步启动一个回收协程，以趋近于 1% CPU 使用率作为目标，持续地对RSS中的空闲内存进行回收.
