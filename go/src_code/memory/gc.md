@@ -708,32 +708,8 @@ func gcBgMarkWorker() {
             casgstatus(gp, _Gwaiting, _Grunning)
         })
         
-        // Account for time and mark us as stopped.
-        now := nanotime()
-        duration := now - startTime
-        gcController.markWorkerStop(pp.gcMarkWorkerMode, duration)
-        if trackLimiterEvent {
-            pp.limiterEvent.stop(limiterEventIdleMarkWork, now)
-        }
-        if pp.gcMarkWorkerMode == gcMarkWorkerFractionalMode {
-            atomic.Xaddint64(&pp.gcFractionalMarkTime, duration)
-        }
-		
-        incnwait := atomic.Xadd(&work.nwait, +1)
-        if incnwait > work.nproc {
-            println("runtime: p.gcMarkWorkerMode=", pp.gcMarkWorkerMode,
-            "work.nwait=", incnwait, "work.nproc=", work.nproc)
-            throw("work.nwait > work.nproc")
-        }
-		
-        pp.gcMarkWorkerMode = gcMarkWorkerNotWorker
-		
-        if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
-            releasem(node.m.ptr())
-            node.m.set(nil)
-            
-            gcMarkDone()
-        }
+        // 标记完成
+        //...
     }
 }
 ~~~
@@ -1444,5 +1420,428 @@ func gcmarknewobject(span *mspan, obj, size uintptr) {
     
     gcw := &getg().m.p.ptr().gcw
     gcw.bytesMarked += uint64(size)
+}
+~~~
+
+## 3. 标记终止
+
+### 3.1 标记完成
+
+在并发标记阶段的gcBgMarkWorker方法中，当最后一个标记协程也完成任务后，会调用gcMarkDone方法，开始执行并发标记后处理的逻辑
+
+/src/runtime/mgc.go:1259
+
+~~~go
+func gcBgMarkWorker() {
+    // ...
+
+    for {
+        // gopark
+        // ...
+		
+        // 被findRunnableGCWorker唤醒后的并发标记阶段
+        // ...
+		
+        // 标记完成阶段
+        now := nanotime()
+        duration := now - startTime
+        gcController.markWorkerStop(pp.gcMarkWorkerMode, duration)
+        if trackLimiterEvent {
+            pp.limiterEvent.stop(limiterEventIdleMarkWork, now)
+        }
+        if pp.gcMarkWorkerMode == gcMarkWorkerFractionalMode {
+            atomic.Xaddint64(&pp.gcFractionalMarkTime, duration)
+        }
+		
+        incnwait := atomic.Xadd(&work.nwait, +1)
+        if incnwait > work.nproc {
+            println("runtime: p.gcMarkWorkerMode=", pp.gcMarkWorkerMode,
+            "work.nwait=", incnwait, "work.nproc=", work.nproc)
+            throw("work.nwait > work.nproc")
+        }
+		
+        pp.gcMarkWorkerMode = gcMarkWorkerNotWorker
+        // 标记完成
+        if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
+            releasem(node.m.ptr())
+            node.m.set(nil)
+            
+            gcMarkDone()
+        }
+    }
+}
+~~~
+
+gcMarkDone函数
+
+gcMarkDone函数，会遍历释放所有P的写屏障缓存，查看是否存在因屏障机制遗留的灰色对象，如果有，则会推出gcMarkDone方法，回退到gcBgMarkWorker的主循环中，继续完成标记任务.
+
+倘若写屏障中也没有遗留的灰对象，此时会调用STW停止世界，修改相应的状态属性，并步入gcMarkTermination方法进入标记终止阶段
+
+/src/runtime/mgc.go:807
+
+~~~go
+func gcMarkDone() {
+    semacquire(&work.markDoneSema)
+    
+top:
+    // 判断是否处于标记阶段且标记已完成，否则回退到并发标记阶段
+    if !(gcphase == _GCmark && work.nwait == work.nproc && !gcMarkWorkAvailable(nil)) {
+        semrelease(&work.markDoneSema)
+        return
+    }
+    
+    semacquire(&worldsema)
+    
+    // Flush all local buffers and collect flushedWork flags.
+    gcMarkDoneFlushed = 0
+    systemstack(func() {
+        gp := getg().m.curg
+        casGToWaiting(gp, _Grunning, waitReasonGCMarkTermination)
+        forEachP(func(pp *p) {
+            // 刷新写屏障缓存，可能会新的待标记任务产生 
+            wbBufFlush1(pp)
+            
+            // 刷新gcWork，更新flushedWork
+            // gcw不为空时，flushedWork会被置为true
+            pp.gcw.dispose()
+            if pp.gcw.flushedWork {
+                // 更新gcMarkDoneFlushed=1
+                atomic.Xadd(&gcMarkDoneFlushed, 1)
+                pp.gcw.flushedWork = false
+            }
+        })
+        casgstatus(gp, _Gwaiting, _Grunning)
+    })
+    // 倘若有新的标记对象待处理，则调回 top 处，可能会回退到并发标记阶段
+    if gcMarkDoneFlushed != 0 {
+        semrelease(&worldsema)
+        goto top
+    }
+    
+    // 修改全局work属性
+    now := nanotime()
+    work.tMarkTerm = now
+    work.pauseStart = now
+    getg().m.preemptoff = "gcing"
+    // 正式进入标记完成阶段，会STW
+    systemstack(func() { stopTheWorldWithSema(stwGCMarkTerm) })
+    restart := false
+    // 切换到g0
+    systemstack(func() {
+        // 遍历所有p,刷新p.wbBuf缓存
+        for _, p := range allp {
+            wbBufFlush1(p)
+            // 存在新的待标记任务，restart置为true
+            if !p.gcw.empty() {
+                restart = true
+                break
+            }
+        }
+    })
+    // 存在新的待标记任务,调回 top 处，可能会回退到并发标记阶段
+    if restart {
+        getg().m.preemptoff = ""
+        // 切换g0栈，start the world
+        systemstack(func() {
+            now := startTheWorldWithSema()
+            work.pauseNS += now - work.pauseStart
+            memstats.gcPauseDist.record(now - work.pauseStart)
+        })
+        semrelease(&worldsema)
+        goto top
+    }
+    
+    gcComputeStartingStackSize()
+    // gcBlackenEnabled置为1，与标记准备阶段相呼应，表示gc标记阶段结束
+    atomic.Store(&gcBlackenEnabled, 0)
+    
+    gcCPULimiter.startGCTransition(false, now)
+    
+    gcWakeAllAssists()
+    
+    semrelease(&work.markDoneSema)
+    
+    schedEnableUser(true)
+    
+    gcController.endCycle(now, int(gomaxprocs), work.userForced)
+    
+    // 在 STW 状态下，进入标记终止阶段
+    gcMarkTermination()
+}
+~~~
+
+### 3.2 标记终止
+
+gcMarkTermination函数
+
+- 设置GC进入标记终止阶段_GCmarktermination
+- 切换至g0，设置GC进入标记关闭阶段_GCoff
+- 切换至g0，调用gcSweep方法，唤醒后台清扫协程，执行标记清扫工作
+- 切换至g0，执行gcControllerCommit方法，设置触发下一轮GC的内存阈值
+- 切换至g0，调用startTheWorldWithSema方法，重启世界
+
+/src/runtime/mgc.go:943
+
+~~~go
+func gcMarkTermination() {
+    // 设置GC阶段进入标记终止阶段
+    setGCPhase(_GCmarktermination)
+    
+    work.heap1 = gcController.heapLive.Load()
+    startTime := nanotime()
+    // 获取当前m，并设置不可抢占
+    mp := acquirem()
+    mp.preemptoff = "gcing"
+    mp.traceback = 2
+    curgp := mp.curg
+    casGToWaiting(curgp, _Grunning, waitReasonGarbageCollection)
+    // 切换g0栈
+    systemstack(func() {
+        gcMark(startTime)
+    })
+    // 切换g0栈
+    systemstack(func() {
+        work.heap2 = work.bytesMarked
+        if debug.gccheckmark > 0 {
+            startCheckmarks()
+            gcResetMarkState()
+            gcw := &getg().m.p.ptr().gcw
+            gcDrain(gcw, 0)
+            wbBufFlush1(getg().m.p.ptr())
+            gcw.dispose()
+            endCheckmarks()
+        }
+        
+        // 设置GC阶段进入标记关闭阶段
+        setGCPhase(_GCoff)
+        // 开始执行标记清扫动作   
+        gcSweep(work.mode)
+    })
+    
+    mp.traceback = 0
+    casgstatus(curgp, _Gwaiting, _Grunning)
+    
+    if traceEnabled() {
+        traceGCDone()
+    }
+    
+    // all done
+    mp.preemptoff = ""
+    
+    if gcphase != _GCoff {
+        throw("gc done but gcphase != _GCoff")
+    }
+    
+    // Record heapInUse for scavenger.
+    memstats.lastHeapInUse = gcController.heapInUse.load()
+    
+    // 提交下一轮GC的内存阈值
+    systemstack(gcControllerCommit)
+    
+    // Update timing memstats
+    //...
+    // start the world
+    systemstack(func() { startTheWorldWithSema() })
+	
+    //...
+}
+~~~
+
+### 3.2 标记清扫
+
+gcSweep函数
+
+gwSweep方法的核心是调用ready方法，唤醒了因为gopark操作陷入被动阻塞的清扫协程sweep.g
+
+/src/runtime/mgc.go:1544
+
+~~~go
+func gcSweep(mode gcMode) {
+    assertWorldStopped()
+    
+    if gcphase != _GCoff {
+        throw("gcSweep being done but phase is not GCoff")
+    }
+    // 设置堆gc相关属性
+    lock(&mheap_.lock)
+    mheap_.sweepgen += 2
+    sweep.active.reset()
+    mheap_.pagesSwept.Store(0)
+    mheap_.sweepArenas = mheap_.allArenas
+    mheap_.reclaimIndex.Store(0)
+    mheap_.reclaimCredit.Store(0)
+    unlock(&mheap_.lock)
+    
+    sweep.centralIndex.clear()
+    
+    if !_ConcurrentSweep || mode == gcForceBlockMode {
+        lock(&mheap_.lock)
+        mheap_.sweepPagesPerByte = 0
+        unlock(&mheap_.lock)
+        for sweepone() != ^uintptr(0) {
+            sweep.npausesweep++
+        }
+        prepareFreeWorkbufs()
+        for freeSomeWbufs(false) {
+        }
+        mProf_NextCycle()
+        mProf_Flush()
+        return
+    }
+    
+    // 唤醒后台清扫任务
+    lock(&sweep.lock)
+    if sweep.parked {
+        sweep.parked = false
+        ready(sweep.g, 0, true)
+    }
+    unlock(&sweep.lock)
+}
+~~~
+
+重新回到runtime包的main函数中，可以看到，在异步启动的bgsweep方法中，会首先将当前协程gopark挂起，等待被唤醒
+
+当在标记终止阶段被唤醒后，会进入for循环，每轮完成10个mspan的清扫工作，随后就尝试调用goschedIfBusy方法主动让渡P的执行权，采用这种懒清扫的方式逐步推进标记清扫流程
+
+~~~go
+// src/runtime/proc.go:144
+func main() {
+    //...
+    // src/runtime/proc.go:208
+    gcenable()
+    //...
+}
+
+// src/runtime/mgc.go:197
+func gcenable() {
+    // Kick off sweeping and scavenging.
+    c := make(chan int, 2)
+    // gc清扫协程
+    go bgsweep(c)
+    // 回收协程启动,系统驻留内存清理
+    go bgscavenge(c)
+    <-c
+    <-c
+    memstats.enablegc = true // now that runtime is initialized, GC is okay
+}
+
+// src/runtime/mgcsweep.go:273
+func bgsweep(c chan int) {
+    sweep.g = getg()
+    
+    lockInit(&sweep.lock, lockRankSweep)
+    lock(&sweep.lock)
+    sweep.parked = true
+    c <- 1
+    //  执行 gopark 操作，等待 GC 并发标记阶段完成后将当前协程唤醒
+    goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceBlockGCSweep, 1)
+    // 清扫逻辑
+    for {
+        const sweepBatchSize = 10
+        nSwept := 0
+        for sweepone() != ^uintptr(0) {
+            sweep.nbgsweep++
+            nSwept++
+            // 常量 sweepBatchSize == 10
+            // 每清扫10个mspan后，尝试主动让渡
+            if nSwept%sweepBatchSize == 0 {
+                // !(!gp.preempt && sched.npidle.Load() > 0)情况下主动让渡
+                goschedIfBusy()
+            }
+        }
+        for freeSomeWbufs(true) {
+            // N.B. freeSomeWbufs is already batched internally.
+            goschedIfBusy()
+        }
+        lock(&sweep.lock)
+        if !isSweepDone() {
+            unlock(&sweep.lock)
+            continue
+        }
+        // 清扫完成，则继续 gopark 被动阻塞
+        sweep.parked = true
+        goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceBlockGCSweep, 1)
+    }
+}
+~~~
+
+sweepone函数
+
+sweepone方法每次清扫一个协程，清扫逻辑核心位于sweepLocked.sweep方法中，正是将mspan的gcmarkBits赋给allocBits，并创建出一个空白的bitmap作为新的gcmarkBits
+
+~~~go
+// src/runtime/mgcsweep.go:356
+func sweepone() uintptr {
+    gp := getg()
+    gp.m.locks++
+	
+    sl := sweep.active.begin()
+    if !sl.valid {
+        gp.m.locks--
+        return ^uintptr(0)
+    }
+    
+    // Find a span to sweep.
+    npages := ^uintptr(0)
+    var noMoreWork bool
+    for {
+        // 查找到一个待清扫的 mspan
+        s := mheap_.nextSpanForSweep()
+        if s == nil {
+            noMoreWork = sweep.active.markDrained()
+            break
+        }
+        if state := s.state.get(); state != mSpanInUse {
+            if !(s.sweepgen == sl.sweepGen || s.sweepgen == sl.sweepGen+3) {
+                print("runtime: bad span s.state=", state, " s.sweepgen=", s.sweepgen, " sweepgen=", sl.sweepGen, "\n")
+                throw("non in-use span in unswept list")
+            }
+            continue
+        }
+        if s, ok := sl.tryAcquire(s); ok {
+            // Sweep the span we found.
+            npages = s.npages
+            if s.sweep(false) {
+                mheap_.reclaimCredit.Add(npages)
+            } else {
+                npages = 0
+            }
+            break
+        }
+    }
+    sweep.active.end(sl)
+    
+    if noMoreWork {
+        if debug.scavtrace > 0 {
+            systemstack(func() {
+                lock(&mheap_.lock)
+                
+                // Get released stats.
+                releasedBg := mheap_.pages.scav.releasedBg.Load()
+                releasedEager := mheap_.pages.scav.releasedEager.Load()
+                
+                // Print the line.
+                printScavTrace(releasedBg, releasedEager, false)
+                
+                // Update the stats.
+                mheap_.pages.scav.releasedBg.Add(-releasedBg)
+                mheap_.pages.scav.releasedEager.Add(-releasedEager)
+                unlock(&mheap_.lock)
+            })
+        }
+        scavenger.ready()
+    }
+    
+    gp.m.locks--
+    return npages
+}
+
+// src/runtime/mgcsweep.go:502
+func (sl *sweepLocked) sweep(preserve bool) bool {
+    // ...
+    s.allocBits = s.gcmarkBits
+    s.gcmarkBits = newMarkBits(s.nelems)
+    // ...
 }
 ~~~
