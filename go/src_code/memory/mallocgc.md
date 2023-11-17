@@ -566,6 +566,8 @@ refill函数
 
 将已满的span释放到mcentral中,从mcentral（或者mheap、操作系统中）获取一个新的span放入mcache.alloc中
 
+如果上一轮gc的并发清扫协程尚未遍历到该mspan,则会先尝试辅助清扫（因为清扫阶段，gc标记为_GCoff,此时已关闭混合屏障，新申请的内存是白色，在将来的清扫协程执行时就会被当作垃圾清扫了），然后再分配内存
+
 src/runtime/mcache.go:147
 
 ~~~go
@@ -582,6 +584,7 @@ func (c *mcache) refill(spc spanClass) {
         if s.sweepgen != mheap_.sweepgen+3 {
             throw("bad sweepgen in refill")
         }
+        // uncacheSpan会尝试清扫mspan
         mheap_.central[spc].mcentral.uncacheSpan(s)
         
         // Count up how many slots were used and record it.
@@ -652,6 +655,7 @@ func (c *mcentral) cacheSpan() *mspan {
     var sl sweepLocker
     
     // Try partial swept spans first.
+    // 可能存在上一轮gc尚未清扫的mspan，尝试清扫标记
     sg := mheap_.sweepgen
     if s = c.partialSwept(sg).pop(); s != nil {
         goto havespan
@@ -680,6 +684,7 @@ func (c *mcentral) cacheSpan() *mspan {
             }
             if s, ok := sl.tryAcquire(s); ok {
                 // We got ownership of the span, so let's sweep it.
+				// 清扫mspan
                 s.sweep(true)
                 // Check if there's any free space.
                 freeIndex := s.nextFreeIndex()
