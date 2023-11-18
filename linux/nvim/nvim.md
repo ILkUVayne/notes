@@ -43,6 +43,7 @@ apt安装的版本一般较低
 tar -zxf nvim-linux64.tar.gz
 
 # 建立软链
+cd /usr/local/bin
 sudo ln -s ~/nvim_src/nvim-linux64/bin/nvim ./nvim
 
 # 查看版本
