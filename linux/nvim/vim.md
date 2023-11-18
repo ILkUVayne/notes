@@ -18,3 +18,7 @@ set tabstop=4
 # 命令模式 输入 q:
 q:
 ~~~
+
+## ctrl+v进入 visual block 与 粘贴快捷键冲突
+
+解决方法：使用ctrl+q
