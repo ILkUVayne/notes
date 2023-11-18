@@ -2,6 +2,8 @@
 
 ## 安装
 
+### 1. apt安装
+
 - 添加源
 
 ~~~bash
@@ -26,6 +28,33 @@ sudo apt upgrade
 
 ~~~bash
 sudo apt install neovim
+~~~
+
+### 2. 官网下载安装
+
+apt安装的版本一般较低
+
+在neovim仓库下载最新release版本：**https://github.com/neovim/neovim/wiki/Installing-Neovim**
+
+下载对应的版本：**https://github.com/neovim/neovim/releases/latest/download/nvim-linux64.tar.gz**
+
+~~~bash
+# 解压
+tar -zxf nvim-linux64.tar.gz
+
+# 建立软链
+sudo ln -s ~/nvim_src/nvim-linux64/bin/nvim ./nvim
+
+# 查看版本
+nvim -version
+NVIM v0.9.4
+Build type: Release
+LuaJIT 2.1.1692716794
+
+   system vimrc file: "$VIM/sysinit.vim"
+  fall-back for $VIM: "/__w/neovim/neovim/build/nvim.AppDir/usr/share/nvim"
+
+Run :checkhealth for more info
 ~~~
 
 ## 基础配置
