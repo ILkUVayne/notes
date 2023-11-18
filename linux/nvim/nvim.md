@@ -1,5 +1,13 @@
 # neovim
 
+## 前置
+
+~~~bash
+sudo apt install ripgrep
+
+sudo apt install fd-find
+~~~
+
 ## 安装
 
 ### 1. apt安装
