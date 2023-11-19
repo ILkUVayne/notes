@@ -40,3 +40,17 @@ E492: Not an editor command: ^M
 ~~~bash
 git config --global core.autocrlf false 
 ~~~
+
+## Can not open brower by using cmd.exe command
+
+wsl2下 markdown-preview 插件不能打开浏览器
+
+解决方法：
+
+导出win的环境变量：
+
+~~~bash
+PATH=$PATH:/mnt/c/Windows/System32/
+~~~
+
+git相关issues [git issues](https://github.com/iamcco/markdown-preview.nvim/issues/309)
