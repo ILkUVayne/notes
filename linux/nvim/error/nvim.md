@@ -50,7 +50,16 @@ wsl2下 markdown-preview 插件不能打开浏览器
 导出win的环境变量：
 
 ~~~bash
-PATH=$PATH:/mnt/c/Windows/System32/
+# 放入.zshrc
+export PATH=$PATH:/mnt/c/Windows/System32/
+~~~
+
+如果打不开预览或者没有反应，可能是 **:call mkdp#util#install()** 命令没有执行成功
+
+手动执行：
+
+~~~vim
+:call mkdp#util#install()
 ~~~
 
 git相关issues [git issues](https://github.com/iamcco/markdown-preview.nvim/issues/309)
