@@ -25,3 +25,15 @@ go install github.com/segmentio/golines@latest
 ~~~bash
 go install github.com/go-delve/delve/cmd/dlv@latest
 ~~~
+
+- gotests
+
+~~~bash
+go install github.com/cweill/gotests/gotests@latest
+~~~
+
+- impl
+
+~~~bash
+go install github.com/josharian/impl@latest
+~~~
