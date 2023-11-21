@@ -19,3 +19,9 @@ go install mvdan.cc/gofumpt@latest
 ~~~bash
 go install github.com/segmentio/golines@latest
 ~~~
+
+- go-delve
+
+~~~bash
+go install github.com/go-delve/delve/cmd/dlv@latest
+~~~
