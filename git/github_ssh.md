@@ -37,6 +37,33 @@ Hi ILkUVayne! You've successfully authenticated, but GitHub does not provide she
 
 # FAQ
 
-- fatal: Could not read from remote repository.
+## fatal: Could not read from remote repository.
 
 如果正确配置了ssh,可能是网络问题，我的解决办法是重启电脑（遇到过两次，都是这么解决的）
+
+## ssh: connect to host github.com port 22: Connection timed out
+
+1. 可能是22端口不可用，尝试换个端口
+
+~~~bash
+ssh -T -p 443 git@ssh.github.com
+Hi ILkUVayne! You've successfully authenticated, but GitHub does not provide shell access.
+~~~
+
+2. 修改端口
+
+~~~bash
+# 创建config
+vim ~/.ssh/config
+~~~
+
+添加配置
+
+~~~editorconfig
+Host github.com
+User git
+Hostname ssh.github.com
+PreferredAuthentications publickey
+IdentityFile ~/.ssh/id_ed25519
+Port 443
+~~~
