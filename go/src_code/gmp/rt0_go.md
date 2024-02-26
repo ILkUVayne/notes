@@ -1,6 +1,6 @@
 # ams_amd64.s中rt0_go方法分析
 
-> 使用dlv 工具调式代码，方便了解执行步骤
+> go 1.21 使用dlv 工具调式代码，方便了解执行步骤
 
 rt0_go方法即为go程序的实际入口，主要功能是完成Go程序启动时的所有初始化工作
 
@@ -85,7 +85,7 @@ MOVQ	SP, (g_stack+stack_hi)(DI)
 ~~~bash
 (dlv) p g0
 runtime.g {
-        // 140728952698464 - 140728952632928 = 65,536 = 64*1024
+        #// 140728952698464 - 140728952632928 = 65,536 = 64*1024
         stack: runtime.stack {lo: 140728952632928, hi: 140728952698464},
         stackguard0: 140728952632928,
         stackguard1: 140728952632928,
@@ -93,7 +93,7 @@ runtime.g {
         _defer: *runtime._defer nil,
         m: *runtime.m nil,
         sched: runtime.gobuf {sp: 0, pc: 0, g: 0, ctxt: unsafe.Pointer(0x0), ret: 0, lr: 0, bp: 0},
-        // ...
+        #// ...
         gcAssistBytes: 0,}
 ~~~
 

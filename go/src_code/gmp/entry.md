@@ -2,7 +2,7 @@
 
 > 版本：go 1.21 平台：amd64 linux
 
-## 对应平台的go程序实际入口
+## 对应平台(linux)的go程序实际入口
 
 ### 1.编写一个简单的go程序
 
@@ -77,7 +77,7 @@ TEXT _rt0_amd64(SB),NOSPLIT,$-8
 该方法设置了arg后，跳转到了runtime·rt0_go(SB)方法，设置断点
 
 ~~~bash
-# 注意汇编函数runtime·rt0_go(SB)的中点需要改成下点，才能正常设置断点
+# 注意汇编函数runtime·rt0_go(SB)的"中点(·)"需要改成"下点(.)"，才能正常设置断点
 (gdb) b runtime.rt0_go
 Breakpoint 3 at 0x454220: file /usr/local/go_src/21/go/src/runtime/asm_amd64.s, line 161.
 # 找到runtime.rt0_go方法的在同文件161行
