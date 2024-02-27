@@ -84,7 +84,7 @@ func mstart0() {
 
 ~~~go
 func mstart1() {
-    // 初始时，_g_为m0中的g0,其他情况下_g_也是各个m的g0
+    // 初始时，gp为m0中的g0,其他情况下gp也是各个m的g0
     gp := getg()
     
     if gp != gp.m.g0 {
@@ -125,7 +125,7 @@ func mstart1() {
     }
     // 如果当前g的m不是m0,它现在还没有p，需要获取一个p, m0已经绑定了allp[0]，所以不用关心m0
     if gp.m != &m0 {
-        // 完成_g_.m和p的互相绑定
+        // 完成gp.m和p的互相绑定
         acquirep(gp.m.nextp.ptr())
         gp.m.nextp = 0
     }
