@@ -30,13 +30,13 @@ func newproc(fn *funcval) {
         
         pp := getg().m.p.ptr()
         // 将这里新创建的 g 放入 p 的本地队列或直接放入全局队列
-        // true 表示放入执行队列的下一个，false 表示放入队尾
+        // true 表示放入执行队列的下一个(P.runnext)，false 表示放入队尾
         // 任务队列分为三级，按优先级从⾼到低分别是 P.runnext、P.runq、Sched.runq
         runqput(pp, newg, true)
         
         // 唤醒一个m来运行g,初始时不会执行，因为mainStarted为false,即runtime包中的main函数还未执行
         // runtime.main函数执行后mainStarted会设置为true proc.go:166
-        // mainStarted==true 就会调用wakep()，尝试唤醒（创建）一个m来执行任务
+        // mainStarted==true 就会调用wakep()，尝试唤醒（创建）一个m来执行任务（充分利用多核优势）
         // wakep()并不能百分百唤醒(创建)一个m，例如当前没有空闲的p时
         if mainStarted {
             wakep()
@@ -70,16 +70,16 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
         fatal("go of nil func value")
     }
     
-    // 获取m,因为是在系统栈运行所以此时的 g.m 为 g0.m
+    // 获取m,因为是在系统栈运行所以此时的 g.m 为 g0.m,并设置不可抢占
     // 初始时，获取的m为m0,即g0.m0
     mp := acquirem() // disable preemption because we hold M and P in local vars.
     // 获得 p,即g0.m.p
     // 初始时，获取的p为g0.m0.p,即allp[0]
     pp := mp.p.ptr()
-    // 从本地队列_p_中获取一个g,如果本地队列中没有g,从全局队列中获取
+    // 从本地队列pp中获取一个g,如果本地队列中没有g,从全局队列中获取
     newg := gfget(pp)
-    // 如果从_p_的本地队列和全局队列中都没有获取到g,则新创建一个g
-    // 初始化阶段，gfget 是不可能找到 g 的
+    // 如果从pp的本地队列和全局队列中都没有获取到g,则新创建一个g
+    // 初始化阶段，gfget函数是不可能找到 g 的
     // 也可能运行中本来就已经耗尽了
     if newg == nil {
         // 创建一个拥有 stackMin 大小的栈的 g  
@@ -179,6 +179,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
     if traceEnabled() {
         traceGoCreate(newg, newg.startpc)
     }
+    // 恢复m可抢占
     releasem(mp)
     
     return newg
@@ -200,9 +201,9 @@ func acquirem() *m {
 }
 ~~~
 
-### 2.2 gfget、gfput方法
+### 2.2 gfget、gfput函数
 
-gfget方法
+gfget函数
 
 主要逻辑：
 
@@ -214,7 +215,7 @@ gfget方法
 ~~~go
 func gfget(pp *p) *g {
 retry:
-    // 本地队列为空时，尝试从全局队列中获取转移一批g到本地队列
+    // 本地队列为空且全局队列不为空时，尝试从全局队列中获取转移一批g到本地队列
     if pp.gFree.empty() && (!sched.gFree.stack.empty() || !sched.gFree.noStack.empty()) {
         lock(&sched.gFree.lock)
         // Move a batch of free Gs to the P.
@@ -235,10 +236,12 @@ retry:
             pp.gFree.n++
         }
         unlock(&sched.gFree.lock)
+        // 跳转retry，再次判断本地队列是否为空
         goto retry
     }
     // 尝试从本地队列获取g
     gp := pp.gFree.pop()
+    // 不存在空闲g，返回nil
     if gp == nil {
         return nil
     }
@@ -278,7 +281,7 @@ retry:
 }
 ~~~
 
-gfput方法
+gfput函数
 
 当goroutine执行完毕，调度器相关函数会将g放回p空闲队列，实现复用
 
@@ -334,7 +337,7 @@ func gfput(pp *p, gp *g) {
 }
 ~~~
 
-### 2.3 malg方法
+### 2.3 malg函数
 
 创建新的g对象，并分配stacksize大小的栈空间
 
@@ -359,9 +362,9 @@ func malg(stacksize int32) *g {
 }
 ~~~
 
-### 2.4 runqput方法
+### 2.4 runqput函数
 
-runqput方法
+runqput函数
 
 主要步骤：
 
@@ -379,18 +382,18 @@ func runqput(pp *p, gp *g, next bool) {
     // 如果可能（next==true），直接将g放在p.runnext，作为下一个优先执行任务
     if next {
     retryNext:
-        // 对_p_.runnext进行备份
+        // 对pp.runnext进行备份
         oldnext := pp.runnext
         // 通过cas操作，将gp和oldnext进行交换
         if !pp.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {
             goto retryNext
         }
-        // 如果oldnext为0，说明_p_.runnext之前没有g,现在已放入完毕，直接返回
+        // 如果oldnext为0，说明pp.runnext之前没有g,现在已放入完毕，直接返回
         if oldnext == 0 {
             return
         }
         // Kick the old runnext out to the regular run queue.
-        // 将之前的g赋值给gp,下面会将gp放入_p_的本地队列
+        // 将之前的g赋值给gp,下面会将gp放入pp的本地队列
         gp = oldnext.ptr()
     }
 
@@ -416,7 +419,7 @@ retry:
 }
 ~~~
 
-runqputslow方法
+runqputslow函数
 
 将g和本地可运行队列中的一批工作放到全局队列中
 
@@ -472,7 +475,7 @@ func runqputslow(pp *p, gp *g, h, t uint32) bool {
 }
 ~~~
 
-globrunqputbatch方法
+globrunqputbatch函数
 
 将一批可运行goroutine放入全局可运行队列
 
@@ -489,7 +492,7 @@ func globrunqputbatch(batch *gQueue, n int32) {
 }
 ~~~
 
-pushBackAll方法
+pushBackAll函数
 
 将q2链表中的g加入到全局队列中
 
@@ -552,7 +555,7 @@ func wakep() {
     // unlock here and lock in startm. A checkdead in between will always
     // see at least one running M (ours).
     unlock(&sched.lock)
-    
+    // 尝试唤醒（创建）m，并执行
     startm(pp, true, false)
     
     releasem(mp)
@@ -640,7 +643,7 @@ func startm(pp *p, spinning, lockheld bool) {
 }
 ~~~
 
-newm方法
+newm函数
 
 主要工作：
 
@@ -684,7 +687,7 @@ func newm(fn func(), pp *p, id int64) {
 }
 ~~~
 
-allocm方法
+allocm函数
 
 /usr/local/go_src/21/go/src/runtime/proc.go:1889
 
