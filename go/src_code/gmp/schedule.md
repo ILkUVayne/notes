@@ -4,7 +4,7 @@
 
 ## 1 schedule函数
 
-任务调度开始入口，调用findRunnable获取一个可执行任务，并调用execute执行任务
+任务调度开始入口，调用findRunnable函数获取一个可执行任务，并调用execute函数执行任务
 
 /usr/local/go_src/21/go/src/runtime/proc.go:3553
 
@@ -90,8 +90,8 @@ findRunnable函数
 
 1. 如果当前处于gc，休眠阻塞当前m不再进行调度
 2. 如果需要 trace或者gc,试图调度一个对应的g
-3. 每调度 61 次且全局可运行队列不为空时，就检查一次全局队列，尝试从全局队列中获取一批g放入本地队列（最多获取全局队列中的一半），保证公平性
-4. 优先从本地队列中获取g，本地队列优先获取p.runnext,如果本地队列为空,尝试从全局队列中获取一批g，逻辑同步骤三
+3. 每调度 61 次且全局可运行队列不为空时，优先检查一次全局队列，尝试从全局队列中获取一个g，并返回
+4. 优先从本地队列中获取g，本地队列优先获取p.runnext,如果本地队列为空,尝试从全局队列中获取一批g，最多获取全局队列中的一半
 5. 全局队列未获取到g,尝试从网络io轮询器中找到准备就绪的g,把这个g变为可运行的g
 6. 本地、全局以及网络io中均获取不到可执行的g时，尝试从其他p的本地队列中偷取一批g到本地队列中（最多其他某个p队列中的一半）
 7. 偷取逻辑最多遍历4次，取到就会返回。前3次尝试从本地可运行队列中偷取一半g到当前p队列中，最后一次若本地队列为空，尝试偷取p.runnext
@@ -150,7 +150,7 @@ top:
     // 每调度 61 次且全局可运行队列不为空时，就检查一次全局队列，保证公平性
     if pp.schedtick%61 == 0 && sched.runqsize > 0 {
         lock(&sched.lock)
-        // 从全局队列中取 g
+        // 从全局队列中取一个g
         gp := globrunqget(pp, 1)
         unlock(&sched.lock)
         if gp != nil {
@@ -405,12 +405,14 @@ globrunqget函数
 
 尝试从全局可运行队列中获取一批g，取出的g中，取出一个返回，剩余g存入调用方p的本地可运行队列中
 
+max等于0或者大于1时，获取一批g,最多获取一半。max等于1时获取一个g
+
 /usr/local/go_src/21/go/src/runtime/proc.go:5992
 
 ~~~go
 func globrunqget(pp *p, max int32) *g {
     assertLockHeld(&sched.lock)
-    
+    // 全局队列为空时，直接返回
     if sched.runqsize == 0 {
         return nil
     }
@@ -446,6 +448,8 @@ func globrunqget(pp *p, max int32) *g {
 runqget函数
 
 从本地可运行队列中获取g
+
+优先从pp.runnext获取，不存在时，再从本地队列pp.runq中获取
 
 /usr/local/go_src/21/go/src/runtime/proc.go:6311
 
@@ -755,7 +759,7 @@ func goexit1() {
 
 goexit0函数
 
-goexit0函数把gp(用户程序g)状态从_Grunning修改为_Gdead，然后清理gp对象中保存内容，其次通过函数dropg解除gp和m之间的绑定关系，然后将gp放入到P的freeg队列中缓存起来，以便后续复用，最后调用schedule，进行新一轮调度.
+goexit0函数把gp(用户程序g)状态从_Grunning修改为_Gdead，然后清理gp对象中保存内容，其次通过dropg函数解除gp和m之间的绑定关系，然后将gp放入到P的freeg队列中缓存起来，以便后续复用，最后调用schedule，进行新一轮调度.
 
 /usr/local/go_src/21/go/src/runtime/proc.go:3861
 
@@ -837,7 +841,7 @@ schedule函数是go任务调度的入口
 schedule函数的执行流程：
 
 1. 函数会在调用findRunnable函数后进入休眠，直到获取到一个可执行任务g,然后是findRunnable主要流程
-2. 首先判断是否已经调度了61次，若是，在全局可执行队列不为空的前提下，优先从全局队列中获取一批g放入当前p的本地队列，并返回
+2. 首先判断是否已经调度了61次，若是，在全局可执行队列不为空的前提下，优先从全局队列中获取一个g，并返回
 3. 否则优先从p的本地队列中获取g（优先p.runnext）返回
 4. 本地队列为空时，尝试从全局队列中获取一批g返回
 5. 全局队列中也获取不到，尝试从io轮询器netpoll中找到准备就绪的g,把这个g变为可运行的g返回
@@ -846,7 +850,7 @@ schedule函数的执行流程：
 8. 尝试偷取失败后，会进行当前m和p的解绑，然后再一次重新尝试查询全局、io轮询器netpoll、其他p中是否有新的g，若存在，重新执行获取逻辑并返回
 9. 最后我们什么也没找到，暂止当前的 m 并阻塞休眠
 10. 当findRunnable函数获取到可执行的g后，最终执行execute函数，执行任务
-11. execute函数绑定当前m和需要执行的g,修改g状态到_Grunning，调用gogo函数，并g设置对应的寄存器信息，然后将g0栈切换到对应g,最终执行g.fn
+11. execute函数绑定当前m和需要执行的g,修改g状态到_Grunning，调用gogo函数，并对g设置对应的寄存器信息，然后将g0栈切换到对应g,最终执行g.fn
 12. g.fn执行完成后，会执行goexit函数（可以理解为是goexit函数调用g.fn,具体实现是在newproc1中伪造成了goexit函数调用g.fn proc.go:4532）
 13. goexit函数由汇编实现，实际调用goexit1函数，goexit1函数mcall(goexit0)函数
 14. mcall是汇编实现，保存当前的g的调度信息到内存中，由用户g切换到g0,在g0栈执行goexit0
