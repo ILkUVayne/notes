@@ -370,7 +370,7 @@ runqput函数
 
 1. 如果next==true,尝试优先将g放入p.runnext 作为下一个优先执行任务,若p.runnext不为空，则进行交换，老的值放入pp.runq队尾
 2. 如果next==false,尝试优先将g放入pp.runq本地可运行队列队尾
-3. 如果本地队列已满，将当前P中前len(p)/2加上当前g一起放到全局可运行队列sched.runq中去
+3. 如果本地队列已满（本地队列长度256 runtime2.go:643），将当前P中前len(p)/2加上当前g一起放到全局可运行队列sched.runq中去
 
 /usr/local/go_src/21/go/src/runtime/proc.go:6200
 
