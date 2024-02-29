@@ -1,4 +1,6 @@
-# 触发GC
+# 触发GC方式及分析
+
+> go 1.21
 
 ## 1. 触发GC的事件类型
 
@@ -8,7 +10,7 @@
 | gcTriggerTime  | 由 forcegchelper 守护协程定时触发 | 每2分钟触发一次   |
 | gcTriggerCycle | 用户调用 runtime.GC 方法       | 上一轮 GC 已结束 |
 
-在触发GC时，会通过 gcTrigger.test 方法，结合具体的触发事件类型进行触发条件的校验
+在触发GC时，会通过 gcTrigger.test 方法，结合具体触发事件类型进行触发条件的校验
 
 /src/runtime/mgc.go:541
 
