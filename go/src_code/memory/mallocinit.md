@@ -4,6 +4,8 @@
 
 schedinit函数
 
+调度器初始化的过程中，会对内存分配器初始化
+
 ~~~go
 func schedinit() {
     // ...
@@ -16,7 +18,7 @@ func schedinit() {
 
 ## 2. mallocinit函数
 
-内存分配器的初始化除去一些例行的检查之外，就是对堆的初始化了
+内存分配器的初始化过程：除去一些例行的检查之外，就是对堆的初始化了
 
 /src/runtime/malloc.go:375
 
