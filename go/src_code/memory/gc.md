@@ -483,7 +483,7 @@ func startTheWorldWithSema() int64 {
 
 schedule函数
 
-GMP调度的主干方法schedule中，会通过g0调用findRunnable方法P寻找下一个可执行的协程，找到后会调用execute方法，内部完成由g0->g的切换，真正执行用户协程中的任务
+GMP调度的主函数schedule中，会通过g0调用findRunnable方法P寻找下一个可执行的协程，找到后会调用execute方法，内部完成由g0->g的切换，真正执行用户协程中的任务
 
 /src/runtime/proc.go:3553
 
@@ -550,16 +550,16 @@ func (c *gcControllerState) findRunnableGCWorker(pp *p, now int64) (*g, int64) {
     }
     
     decIfPositive := func(val *atomic.Int64) bool {
-    for {
-        v := val.Load()
-        if v <= 0 {
-            return false
+        for {
+            v := val.Load()
+            if v <= 0 {
+                return false
+            }
+            
+            if val.CompareAndSwap(v, v-1) {
+                return true
+            }
         }
-        
-        if val.CompareAndSwap(v, v-1) {
-            return true
-        }
-    }
     }
     // 确认标记的模式
     if decIfPositive(&c.dedicatedMarkWorkersNeeded) {
@@ -900,7 +900,7 @@ func wbBufFlush1(pp *p) {
 
 #### 2.3.2 灰对象缓存队列
 
-gcw，这是灰色对象的存储代理和载体，在标记过程中需要持续不断地从从队列中取出灰色对象，进行扫描，并将新的灰色对象通过gcw添加到缓存队列.
+gcw，这是灰色对象的存储队列和载体，在标记过程中需要持续不断地从队列中取出灰色对象，进行扫描，并将新的灰色对象通过gcw添加到缓存队列.
 
 灰对象缓存队列分为两层：
 
