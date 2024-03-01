@@ -202,8 +202,10 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
     //    3. 大对象 >32kb
     //
     // 小对象或者微对象分配 <=32kb
+    // maxSmallSize == 32768
     if size <= maxSmallSize {
         // 微对象 <16b 且不包含指针
+        // maxTinySize == 16
         if noscan && size < maxTinySize {
             // tiny 内存块中的空闲内存偏移值，即从 offset 往后有空闲位置
             off := c.tinyoffset
@@ -484,7 +486,7 @@ noscan := typ == nil || typ.ptrdata == 0
 
 ### 3.3 申请新的内存
 
-当tiny不足以分配时，会尝试以这个顺序 **p.mcache->mCentral->mheap->向操作系统申请** 一次申请内存
+当tiny不足以分配时，会尝试以这个顺序 **p.mcache->mCentral->mheap->向操作系统申请** 依次申请内存
 
 #### 3.3.1 尝试从p.mcache分配内存
 
