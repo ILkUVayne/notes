@@ -4,7 +4,7 @@
 
 ## 1. channel结构
 
-实现 Channel 的结构就是一个 mutex 锁加上一个环状缓存、 一个发送方队列和一个接收方队列
+实现 Channel 的结构主要由一个 mutex 锁加上一个环状缓存、 一个发送方队列和一个接收方队列组成
 
 ~~~go
 // src/runtime/chan.go:33
@@ -36,7 +36,7 @@ type waitq struct { // 等待队列 sudog 双向队列
 
 // src/runtime/runtime2.go:355
 // sudog表示等待列表中的g，例如用于在通道上发送/接收。 
-// sudog是必要的，因为g↔ 同步对象关系是多对多的。一个g可能在许多等待列表上，因此一个g可以有许多sudog；许多gs可能在同一个同步对象上等待，因此一个对象可能有许多sudog。 
+// sudog是必要的，因为 (g ↔ 同步对象) 关系是多对多的。一个g可能在许多等待列表上，因此一个g可以有许多sudog；许多gs可能在同一个同步对象上等待，因此一个对象可能有许多sudog。 
 // sudog是从一个特殊的池中分配的。使用acquireSudog和releaseSudog来分配和释放它们
 type sudog struct {
     // 以下字段受此sudog正在阻塞的通道的hchan.lock保护。对于参与通道操作的sudog，shrinkstack依赖于此。
@@ -631,7 +631,7 @@ func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
             racenotify(c, c.recvx, sg)
         }
         // 从接收队列拷贝数据到接收方
-        // 将.buf[c.buf+c.recvx]拷贝到ep
+        // 将c.buf[c.buf+c.recvx]拷贝到ep
         if ep != nil {
             typedmemmove(c.elemtype, ep, qp)
         }
