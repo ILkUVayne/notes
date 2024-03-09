@@ -44,3 +44,41 @@ source <(kubectl completion bash)
 # zsh
 source <(kubectl completion zsh)
 ~~~
+
+## 外网访问
+
+如果是阿里云服务器，需要添加安全组（6443端口）
+
+添加tls-san配置
+
+~~~bash
+# xxx.xxx.xxx.158 是云服务器公网地址
+# vim /etc/systemd/system/multi-user.target.wants/k3s.service
+ExecStart=/usr/local/bin/k3s server '--tls-san' 'xxx.xxx.xxx.158'
+~~~
+
+## 修改docker运行时
+
+> 省略下载安装docker
+
+修改配置：
+
+~~~bash
+sudo vim /etc/systemd/system/multi-user.target.wants/k3s.service
+~~~
+
+需要修改ExecStart的值，将其修改为：
+
+~~~bash
+/usr/local/bin/k3s server --docker --no-deploy traefik
+~~~
+
+重启服务
+
+~~~bash
+sudo systemctl daemon-reload
+sudo systemctl restart k3s 
+
+# 然后查看节点是否启动正常
+sudo k3s kubectl get no
+~~~
