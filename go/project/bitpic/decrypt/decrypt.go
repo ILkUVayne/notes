@@ -15,18 +15,13 @@ import (
 )
 
 func Decrypt(filepath string) {
-
 	//读取bit pic
 	f, err := os.Open(filepath)
-
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 	defer func(f *os.File) {
-		err := f.Close()
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		_ = f.Close()
 	}(f)
 
 	g, _, err := image.Decode(bufio.NewReader(f))
@@ -34,9 +29,7 @@ func Decrypt(filepath string) {
 		log.Fatal(err.Error())
 	}
 
-	rect := g.Bounds()
-	size := rect.Size()
-
+	size := g.Bounds().Size()
 	picWidth := size.X
 	picHeight := size.Y
 
@@ -44,19 +37,17 @@ func Decrypt(filepath string) {
 	bin := make([]byte, 0)
 	for y := 0; y < picHeight; y++ {
 		for x := 0; x < picWidth; x++ {
-			pixelItem := g.At(x, y)
-			r0, _, _, _ := pixelItem.RGBA()
+			r0, _, _, _ := g.At(x, y).RGBA()
 			if r0 == 65535 {
 				bin = append(bin, 0)
-			} else if r0 == 0 {
-				bin = append(bin, 1)
+				continue
 			}
+			bin = append(bin, 1)
 		}
 	}
 
 	// get byte array
-	str := ""
-	byteArr := make([]byte, 0)
+	str, byteArr := "", make([]byte, 0)
 	for i := 0; i < len(bin); i = i + 8 {
 		// 如果后面连续4个字节都为0，则退出循环
 		if bytes.Equal(bin[i:i+32], make([]byte, 32, 32)) {
@@ -95,10 +86,7 @@ func saveToFile(s, filepath string) {
 		return
 	}
 	defer func(f *os.File) {
-		err := f.Close()
-		if err != nil {
-
-		}
+		_ = f.Close()
 	}(f)
 	_, err = f.WriteString(s)
 }

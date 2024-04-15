@@ -16,12 +16,8 @@ const WIDTH = 256
 
 func Encrypt(filepath string) {
 	f, _ := os.Open(filepath)
-
 	defer func(f *os.File) {
-		err := f.Close()
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		_ = f.Close()
 	}(f)
 
 	// get byte array
@@ -33,7 +29,6 @@ func Encrypt(filepath string) {
 	for _, v := range content {
 		binary := strconv.FormatInt(int64(v), 2)
 		binary = binaryCompletion(binary)
-
 		for _, bv := range binary {
 			if string(bv) == "1" {
 				bits = append(bits, 1)
@@ -44,7 +39,6 @@ func Encrypt(filepath string) {
 	}
 	// 获取生成图片高度
 	height := int(float64(len(bits))/float64(WIDTH)) + 1
-
 	img := image.NewRGBA(image.Rect(0, 0, WIDTH, height))
 
 	// 位图索引
@@ -88,23 +82,39 @@ func saveImg(img *image.RGBA, filepath string) {
 	}
 }
 
+var binaryCompletionMaps = map[int]string{
+	1: "0000000",
+	2: "000000",
+	3: "00000",
+	4: "0000",
+	5: "000",
+	6: "00",
+	7: "0",
+}
+
 func binaryCompletion(binary string) string {
-	switch len(binary) {
-	case 1:
-		return "0000000" + binary
-	case 2:
-		return "000000" + binary
-	case 3:
-		return "00000" + binary
-	case 4:
-		return "0000" + binary
-	case 5:
-		return "000" + binary
-	case 6:
-		return "00" + binary
-	case 7:
-		return "0" + binary
-	default:
+	l := len(binary)
+	if l == 8 {
 		return binary
 	}
+	return binaryCompletionMaps[l] + binary
+
+	//switch len(binary) {
+	//case 1:
+	//	return "0000000" + binary
+	//case 2:
+	//	return "000000" + binary
+	//case 3:
+	//	return "00000" + binary
+	//case 4:
+	//	return "0000" + binary
+	//case 5:
+	//	return "000" + binary
+	//case 6:
+	//	return "00" + binary
+	//case 7:
+	//	return "0" + binary
+	//default:
+	//	return binary
+	//}
 }
