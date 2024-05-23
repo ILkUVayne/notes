@@ -59,6 +59,10 @@ func main() {
     fmt.Printf("%T\n", s) // *[]int
     i := new(int)
     fmt.Printf("%T\n", i) // *int
+    var mm map[string]int
+    var ii int
+    fmt.Printf("%T\n", ii) // int
+    fmt.Printf("%T\n", mm) // map[string]int
 }
 ~~~
 
