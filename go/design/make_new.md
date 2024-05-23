@@ -136,6 +136,6 @@ fmt.Printf("i: %p %v\n", &i, <-i) // i: 0xc00009c018 1
 
 ## 总结
 
-1. new和make都可以分配内存，但是new可以为所有类型分贝==分配内存，但是make只能用于chan、map、slice
+1. new和make都可以分配内存，但是new可以为所有类型分配内存，但是make只能用于chan、map、slice
 2. new分配内存后返回变量的指针，make返回类型本身
 3. make会分配内存并初始化。new只分配内存，将内存清零，并没有初始化内存。当new的类型为非引用类型（chan、map、slice）时，可以直接对变量进行赋值操作，当new的类型为引用类型时，则还需要调用make进行初始化
